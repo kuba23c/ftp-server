@@ -18,29 +18,117 @@
  */
 
 #include "ftp_server.h"
-#include "ftp.h"
+#include "lwip.h"
+#include "FreeRTOS.h"
+#include "ftp_config.h"
 
+// stdlib
 #include <string.h>
 #include <ctype.h>
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdarg.h>
 
+// RTOS include
+#include "event_groups.h"
+// lwip include
 #include "api.h"
 
-static char *ftp_user_name = FTP_USER_NAME_DEFAULT;
-static char *ftp_user_pass = FTP_USER_PASS_DEFAULT;
-
-#define DEBUG_PRINT(ftp, f, ...)	log_print("[%d] "f, ftp->ftp_con_num, ##__VA_ARGS__)
-
+#define FTP_VERSION				"2020-08-20"
+#define FTP_PARAM_SIZE			_MAX_LFN + 8
+#define FTP_CWD_SIZE			_MAX_LFN + 8
+#define FTP_CMD_SIZE			5
+#define FTP_BUF_SIZE			512
+#define PORT_INCREMENT_OFFSET	25 // used for a bugfix which works around ports which are already in use (from a previous connection)
+#define DEBUG_PRINT(ftp, f, ...)	FTP_LOG_PRINT("[%d] "f, ftp->ftp_con_num, ##__VA_ARGS__)
 #define FTP_USER_NAME_OK(name)		(!strcmp(name, ftp_user_name))
 #define FTP_USER_PASS_OK(pass)		(!strcmp(pass, ftp_user_pass))
 #define FTP_IS_LOGGED_IN(p_ftp)		(p_ftp->user == FTP_USER_USER_LOGGED_IN)
 
-//
-__weak uint8_t ftp_eth_is_connected(void) {
-}
+// Data Connection mode enumeration typedef
+typedef enum {
+	DCM_NOT_SET,
+	DCM_PASSIVE,
+	DCM_ACTIVE
+} dcm_type;
 
+// ftp log in enumeration typedef
+typedef enum {
+	FTP_USER_NONE,
+	FTP_USER_USER_NO_PASS,
+	FTP_USER_USER_LOGGED_IN
+} ftp_user_t;
+
+/**
+ * Structure that contains all variables used in FTP connection.
+ * This is not nicely done since code is ported from C++ to C. The
+ * C++ private object variables are listed inside this structure.
+ */
+typedef struct {
+	// sockets
+	struct netconn *listdataconn;
+	struct netconn *dataconn;
+	struct netconn *ctrlconn;
+	struct netbuf *inbuf;
+
+	// ip addresses
+	ip4_addr_t ipclient;
+	ip4_addr_t ipserver;
+
+	// port
+	uint16_t data_port;
+	uint8_t data_port_incremented;
+
+	// file variables, not created on stack but static on boot
+	// to avoid overflow and ensure alignment in memory
+	FIL file;
+	FILINFO finfo;
+	char lfn[_MAX_LFN + 1];
+
+	// buffer for command sent by client
+	char command[FTP_CMD_SIZE];
+
+	// buffer for parameters sent by client
+	char parameters[FTP_PARAM_SIZE];
+
+	// buffer for origin path for Rename command
+	char path_rename[FTP_CWD_SIZE];
+
+	// buffer for path that is currently used
+	char path[FTP_CWD_SIZE];
+
+	// connection mode (not set, active or passive)
+	uint8_t ftp_con_num;
+
+	// state which tells which user is logged in
+	ftp_user_t user;
+
+	// data connection mode state
+	dcm_type data_conn_mode;
+} ftp_data_t;
+
+// structure for ftp commands
+typedef struct {
+	const char *cmd;
+	void (*func)(ftp_data_t *ftp);
+} ftp_cmd_t;
+
+// define a structure of parameters for a ftp thread
+typedef struct {
+	uint8_t number;
+	struct netconn *ftp_connection;
+	TaskHandle_t task_handle;
+#if FTP_TASK_STATIC == 1
+	StackType_t task_stack[FTP_TASK_STACK_SIZE];
+	StaticTask_t task_static;
+#endif
+	ftp_data_t ftp_data;
+} server_stru_t;
+
+static char ftp_user_name[FTP_USER_NAME_LEN] = FTP_USER_NAME_DEFAULT;
+static char ftp_user_pass[FTP_USER_PASS_LEN] = FTP_USER_PASS_DEFAULT;
+static const char *no_conn_allowed = "421 No more connections allowed\r\n";
+static server_stru_t ftp_links[FTP_NBR_CLIENTS] = {0};
 // =========================================================
 //
 //              Send a response to the client
@@ -79,7 +167,7 @@ static void ftp_send(ftp_data_t *ftp, const char *fmt, ...) {
 
 static char * data_time_to_str(char *str, uint16_t date, uint16_t time) {
 	snprintf(str, 25, "%04d%02d%02d%02d%02d%02d", ((date & 0xFE00) >> 9) + 1980, (date & 0x01E0) >> 5, date & 0x001F, (time & 0xF800) >> 11, (time & 0x07E0) >> 5, (time & 0x001F) << 1);
-	return str;
+	return (str);
 }
 
 // Calculate date and time from first parameter sent by MDTM command (YYYYMMDDHHMMSS)
@@ -95,10 +183,10 @@ static int8_t date_time_get(char *parameters, uint16_t * pdate, uint16_t * ptime
 	// Date/time are expressed as a 14 digits long string
 	//   terminated by a space and followed by name of file
 	if (strlen(parameters) < 15 || parameters[14] != ' ')
-		return 0;
+		return (0);
 	for (uint8_t i = 0; i < 14; i++)
-		if (!isdigit(parameters[i]))
-			return 0;
+		if (!isdigit((uint8_t)parameters[i]))
+			return (0);
 
 	parameters[14] = 0;
 	*ptime = atoi(parameters + 12) >> 1;   // seconds
@@ -113,7 +201,7 @@ static int8_t date_time_get(char *parameters, uint16_t * pdate, uint16_t * ptime
 	parameters[4] = 0;
 	*pdate |= (atoi(parameters) - 1980) << 9;       // years
 
-	return 15;
+	return (15);
 }
 
 // =========================================================
@@ -124,26 +212,26 @@ static int8_t date_time_get(char *parameters, uint16_t * pdate, uint16_t * ptime
 
 static int ftp_read_command(ftp_data_t *ftp) {
 	// loop and check for packet every second
-	for (uint32_t i = 0; i < FTP_TIME_OUT_S; i++) {
+	for (uint32_t i = 0; i < FTP_SERVER_INACTIVE_CNT; i++) {
 		// receive data
 		int8_t net_err = netconn_recv(ftp->ctrlconn, &ftp->inbuf);
 
 		// reception was ok?
 		if (net_err == ERR_OK) {
-			return 0;
+			return (0);
 		}
 
 		// other error than timeout?
-		if (net_err != ERR_TIMEOUT)
+		if (net_err != ERR_TIMEOUT){
 			break;
-
+		}
 		// link down?
-		if (!ftp_eth_is_connected())
+		if (!FTP_ETH_IS_LINK_UP()){
 			break;
+		}
 	}
-
 	// all good
-	return -1;
+	return (-1);
 }
 
 // =========================================================
@@ -178,7 +266,7 @@ static int ftp_parse_command(ftp_data_t *ftp) {
 	// copy command loop
 	do {
 		// command may only contain characters, not the case?
-		if (!isalpha(pbuf[i]))
+		if (!isalpha((uint8_t)pbuf[i]))
 			break;
 
 		// copy character
@@ -227,7 +315,7 @@ static int ftp_parse_command(ftp_data_t *ftp) {
 	netbuf_delete(ftp->inbuf);
 
 	// return error code
-	return ret;
+	return (ret);
 }
 
 // =========================================================
@@ -240,7 +328,7 @@ static int pasv_con_open(ftp_data_t *ftp) {
 	// If this is not already done, create the TCP connection handle
 	// to listen to client to open data connection
 	if (ftp->listdataconn != NULL)
-		return 0;
+		return (0);
 
 	// create new socket
 	ftp->listdataconn = netconn_new(NETCONN_TCP);
@@ -248,28 +336,28 @@ static int pasv_con_open(ftp_data_t *ftp) {
 	// create was ok?
 	if (ftp->listdataconn == NULL) {
 		DEBUG_PRINT(ftp, "Error in opening listening con, creation failed\r\n");
-		return -1;
+		return (-1);
 	}
 
 	// Bind listdataconn to port (FTP_DATA_PORT + num) with default IP address
 	int8_t err = netconn_bind(ftp->listdataconn, IP_ADDR_ANY, ftp->data_port);
 	if (err != ERR_OK) {
 		DEBUG_PRINT(ftp, "Error in opening listening con, bind failed %d\r\n", err);
-		return -1;
+		return (-1);
 	}
 
 	//
-	netconn_set_recvtimeout(ftp->listdataconn, 5000);
+	netconn_set_recvtimeout(ftp->listdataconn, FTP_PSV_LISTEN_TIMEOUT_MS);
 
 	// Put the connection into LISTEN state
 	err = netconn_listen(ftp->listdataconn);
 	if (err != ERR_OK) {
 		DEBUG_PRINT(ftp, "Error in opening listening con, listen failed %d\r\n", err);
-		return -1;
+		return (-1);
 	}
 
 	// all good
-	return 0;
+	return (0);
 }
 
 static void pasv_con_close(ftp_data_t *ftp) {
@@ -294,7 +382,7 @@ static int data_con_open(ftp_data_t *ftp) {
 	// no connection mode set?
 	if (ftp->data_conn_mode == DCM_NOT_SET) {
 		DEBUG_PRINT(ftp, "No connecting mode defined\r\n");
-		return -1;
+		return (-1);
 	}
 
 	// feedback
@@ -305,16 +393,16 @@ static int data_con_open(ftp_data_t *ftp) {
 		// in passive mode the connection to the client should already be made
 		// and the listen data socket should be initialized (not NULL).
 		if (ftp->listdataconn == NULL) {
-			return -1;
+			return (-1);
 		}
 
 		// Wait for connection from client for 500ms
-		netconn_set_recvtimeout(ftp->listdataconn, 500);
+		netconn_set_recvtimeout(ftp->listdataconn, FTP_PSV_ACCEPT_TIMEOUT_MS);
 
 		// accept connection
 		if (netconn_accept(ftp->listdataconn, &ftp->dataconn) != ERR_OK) {
 			DEBUG_PRINT(ftp, "Error in data conn: netconn_accept\r\n");
-			return -1;
+			return (-1);
 		}
 	}
 	// we are in active mode
@@ -325,7 +413,7 @@ static int data_con_open(ftp_data_t *ftp) {
 		// was creation succesfull?
 		if (ftp->dataconn == NULL) {
 			DEBUG_PRINT(ftp, "Error in data conn: netconn_new\r\n");
-			return -1;
+			return (-1);
 		}
 
 		//  Connect to data port with client IP address
@@ -333,7 +421,7 @@ static int data_con_open(ftp_data_t *ftp) {
 			DEBUG_PRINT(ftp, "Error in data conn: netconn_bind\r\n");
 			netconn_delete(ftp->dataconn);
 			ftp->dataconn = NULL;
-			return -1;
+			return (-1);
 		}
 
 		// did connection fail?
@@ -341,12 +429,12 @@ static int data_con_open(ftp_data_t *ftp) {
 			DEBUG_PRINT(ftp, "Error in data conn: netconn_connect\r\n");
 			netconn_delete(ftp->dataconn);
 			ftp->dataconn = NULL;
-			return -1;
+			return (-1);
 		}
 	}
 
 	// all good
-	return 0;
+	return (0);
 }
 
 static void data_con_close(ftp_data_t *ftp) {
@@ -440,10 +528,10 @@ static uint8_t path_build(char *current_path, char *ftp_param) {
 
 	// does the string fit? success
 	if (strlen(current_path) < FTP_CWD_SIZE)
-		return 1;
+		return (1);
 
 	// failed
-	return 0;
+	return (0);
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -480,7 +568,7 @@ static void ftp_cmd_cwd(ftp_data_t *ftp) {
 	}
 
 	// is this not the root path and doesn't the path exist?
-	if (strcmp(ftp->path, "/") != 0 && ftps_f_stat(ftp->path, &ftp->finfo) != FR_OK) {
+	if (strcmp(ftp->path, "/") != 0 && FTP_F_STAT(ftp->path, &ftp->finfo) != FR_OK) {
 		ftp_send(ftp, "550 Failed to change directory to %s\r\n", ftp->path);
 		return;
 	}
@@ -544,7 +632,7 @@ static void ftp_cmd_pasv(ftp_data_t *ftp) {
 	if (!FTP_IS_LOGGED_IN(ftp))
 		return;
 
-#if USE_PASSIVE_MODE == 1
+#if FTP_USE_PASSIVE_MODE == 1
 	// set data port
 	ftp->data_port = FTP_DATA_PORT + ftp->data_port_incremented + (ftp->ftp_con_num * PORT_INCREMENT_OFFSET);
 
@@ -658,7 +746,7 @@ static void ftp_cmd_list(ftp_data_t *ftp) {
 	DIR dir;
 
 	// can we open the directory?
-	if (ftps_f_opendir(&dir, ftp->path) != FR_OK) {
+	if (FTP_F_OPENDIR(&dir, ftp->path) != FR_OK) {
 		ftp_send(ftp, "550 Can't open directory %s\r\n", ftp->parameters);
 		return;
 	}
@@ -676,7 +764,7 @@ static void ftp_cmd_list(ftp_data_t *ftp) {
 	char dir_name_buf[FTP_BUF_SIZE];
 
 	// loop until errors occur
-	while (ftps_f_readdir(&dir, &ftp->finfo) == FR_OK) {
+	while (FTP_F_READDIR(&dir, &ftp->finfo) == FR_OK) {
 		// last entry read?
 		if (ftp->finfo.fname[0] == 0)
 			break;
@@ -693,7 +781,7 @@ static void ftp_cmd_list(ftp_data_t *ftp) {
 			snprintf(dir_name_buf, FTP_BUF_SIZE, "+/,\t%s\r\n", ftp->lfn[0] == 0 ? ftp->finfo.fname : ftp->lfn);
 		// just a file
 		else
-			snprintf(dir_name_buf, FTP_BUF_SIZE, "+r,s%d,\t%s\r\n", ftp->finfo.fsize, ftp->lfn[0] == 0 ? ftp->finfo.fname : ftp->lfn);
+			snprintf(dir_name_buf, FTP_BUF_SIZE, "+r,s%ld,\t%s\r\n", ftp->finfo.fsize, ftp->lfn[0] == 0 ? ftp->finfo.fname : ftp->lfn);
 
 		// write data to endpoint
 		netconn_write(ftp->dataconn, dir_name_buf, strlen(dir_name_buf), NETCONN_COPY);
@@ -715,7 +803,7 @@ static void ftp_cmd_mlsd(ftp_data_t *ftp) {
 	uint16_t nm = 0;
 
 	// can we open the directory?
-	if (ftps_f_opendir(&dir, ftp->path) != FR_OK) {
+	if (FTP_F_OPENDIR(&dir, ftp->path) != FR_OK) {
 		ftp_send(ftp, "550 Can't open directory %s\r\n", ftp->parameters);
 		return;
 	}
@@ -733,7 +821,7 @@ static void ftp_cmd_mlsd(ftp_data_t *ftp) {
 	char buf[FTP_BUF_SIZE];
 
 	// loop while we read without errors
-	while (ftps_f_readdir(&dir, &ftp->finfo) == FR_OK) {
+	while (FTP_F_READDIR(&dir, &ftp->finfo) == FR_OK) {
 		// end of directory found?
 		if (ftp->finfo.fname[0] == 0)
 			break;
@@ -745,12 +833,12 @@ static void ftp_cmd_mlsd(ftp_data_t *ftp) {
 		// does the file have a date?
 		if (ftp->finfo.fdate != 0) {
 			char date_str[64];
-			snprintf(buf, FTP_BUF_SIZE, "Type=%s;Size=%d;Modify=%s; %s\r\n", ftp->finfo.fattrib & AM_DIR ? "dir" : "file", ftp->finfo.fsize,
+			snprintf(buf, FTP_BUF_SIZE, "Type=%s;Size=%ld;Modify=%s; %s\r\n", ftp->finfo.fattrib & AM_DIR ? "dir" : "file", ftp->finfo.fsize,
 					data_time_to_str(date_str, ftp->finfo.fdate, ftp->finfo.ftime), ftp->lfn[0] == 0 ? ftp->finfo.fname : ftp->lfn);
 		}
 		// file has no date
 		else {
-			snprintf(buf, FTP_BUF_SIZE, "Type=%s;Size=%d; %s\r\n", ftp->finfo.fattrib & AM_DIR ? "dir" : "file", ftp->finfo.fsize, ftp->lfn[0] == 0 ? ftp->finfo.fname : ftp->lfn);
+			snprintf(buf, FTP_BUF_SIZE, "Type=%s;Size=%ld; %s\r\n", ftp->finfo.fattrib & AM_DIR ? "dir" : "file", ftp->finfo.fsize, ftp->lfn[0] == 0 ? ftp->finfo.fname : ftp->lfn);
 		}
 
 		// write the data
@@ -785,7 +873,7 @@ static void ftp_cmd_dele(ftp_data_t *ftp) {
 	}
 
 	// does the file exist?
-	if (ftps_f_stat(ftp->path, &ftp->finfo) != FR_OK) {
+	if (FTP_F_STAT(ftp->path, &ftp->finfo) != FR_OK) {
 		// go up a level again
 		path_up_a_level(ftp->path);
 
@@ -797,7 +885,7 @@ static void ftp_cmd_dele(ftp_data_t *ftp) {
 	}
 
 	// can we delete the file?
-	if (ftps_f_unlink(ftp->path) != FR_OK) {
+	if (FTP_F_UNLINK(ftp->path) != FR_OK) {
 		// go up a level again
 		path_up_a_level(ftp->path);
 
@@ -842,7 +930,7 @@ static void ftp_cmd_retr(ftp_data_t *ftp) {
 	}
 
 	// does the chosen file exists?
-	if (ftps_f_stat(ftp->path, &ftp->finfo) != FR_OK) {
+	if (FTP_F_STAT(ftp->path, &ftp->finfo) != FR_OK) {
 		// go up a level again
 		path_up_a_level(ftp->path);
 
@@ -854,7 +942,7 @@ static void ftp_cmd_retr(ftp_data_t *ftp) {
 	}
 
 	// can we open the file?
-	if (ftps_f_open(&ftp->file, ftp->path, FA_READ) != FR_OK) {
+	if (FTP_F_OPEN(&ftp->file, ftp->path, FA_READ) != FR_OK) {
 		// go up a level again
 		path_up_a_level(ftp->path);
 
@@ -874,7 +962,7 @@ static void ftp_cmd_retr(ftp_data_t *ftp) {
 		ftp_send(ftp, "425 Can't create connection\r\n");
 
 		// close file
-		ftps_f_close(&ftp->file);
+		FTP_F_CLOSE(&ftp->file);
 
 		// go back
 		return;
@@ -884,7 +972,7 @@ static void ftp_cmd_retr(ftp_data_t *ftp) {
 	DEBUG_PRINT(ftp, "Sending %s\r\n", ftp->parameters);
 
 	// send accept to client
-	ftp_send(ftp, "150 Connected to port %u, %lu bytes to download\r\n", ftp->data_port, ftps_f_size(&ftp->file));
+	ftp_send(ftp, "150 Connected to port %u, %lu bytes to download\r\n", ftp->data_port, FTP_F_SIZE(&ftp->file));
 
 	// variables used in loop
 	int bytes_transfered = 0;
@@ -894,7 +982,7 @@ static void ftp_cmd_retr(ftp_data_t *ftp) {
 	// loop while reading is OK
 	while (1) {
 		// read from file ok?
-		if (ftps_f_read(&ftp->file, buf, FTP_BUF_SIZE, (UINT *) &bytes_read) != FR_OK) {
+		if (FTP_F_READ(&ftp->file, buf, FTP_BUF_SIZE, (UINT *) &bytes_read) != FR_OK) {
 			ftp_send(ftp, "451 Communication error during transfer\r\n");
 			break;
 		}
@@ -918,7 +1006,7 @@ static void ftp_cmd_retr(ftp_data_t *ftp) {
 	DEBUG_PRINT(ftp, "Sent %u bytes\r\n", bytes_transfered);
 
 	// close file
-	ftps_f_close(&ftp->file);
+	FTP_F_CLOSE(&ftp->file);
 
 	// go up a level again
 	path_up_a_level(ftp->path);
@@ -948,7 +1036,7 @@ static void ftp_cmd_stor(ftp_data_t *ftp) {
 	}
 
 	// does the path exist?
-	if (ftps_f_open(&ftp->file, ftp->path, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) {
+	if (FTP_F_OPEN(&ftp->file, ftp->path, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) {
 		// go up a level again
 		path_up_a_level(ftp->path);
 
@@ -968,7 +1056,7 @@ static void ftp_cmd_stor(ftp_data_t *ftp) {
 		ftp_send(ftp, "425 Can't create connection\r\n");
 
 		// close file
-		ftps_f_close(&ftp->file);
+		FTP_F_CLOSE(&ftp->file);
 
 		// go back
 		return;
@@ -1030,7 +1118,7 @@ static void ftp_cmd_stor(ftp_data_t *ftp) {
 			// offset ok?
 			if (offset == FTP_BUF_SIZE) {
 				// write data to file
-				file_err = ftps_f_write(&ftp->file, buf, FTP_BUF_SIZE, (UINT *) &bytes_written);
+				file_err = FTP_F_WRITE(&ftp->file, buf, FTP_BUF_SIZE, (UINT *) &bytes_written);
 
 				// write ok?
 				if (file_err != 0)
@@ -1056,14 +1144,14 @@ static void ftp_cmd_stor(ftp_data_t *ftp) {
 
 	// write the remaining data to file
 	if (offset > 0 && file_err == 0) {
-		file_err = ftps_f_write(&ftp->file, buf, offset, (UINT *) &bytes_written);
+		file_err = FTP_F_WRITE(&ftp->file, buf, offset, (UINT *) &bytes_written);
 	}
 
 	// feedback
-	DEBUG_PRINT(ftp, "Received %u bytes\r\n", bytes_transfered);
+	DEBUG_PRINT(ftp, "Received %lu bytes\r\n", bytes_transfered);
 
 	// close file
-	ftps_f_close(&ftp->file);
+	FTP_F_CLOSE(&ftp->file);
 
 	// go up a level again
 	path_up_a_level(ftp->path);
@@ -1093,7 +1181,7 @@ static void ftp_cmd_mkd(ftp_data_t *ftp) {
 	}
 
 	// does the path not exist already?
-	if (ftps_f_stat(ftp->path, &ftp->finfo) == FR_OK) {
+	if (FTP_F_STAT(ftp->path, &ftp->finfo) == FR_OK) {
 		// go up a level again
 		path_up_a_level(ftp->path);
 
@@ -1105,7 +1193,7 @@ static void ftp_cmd_mkd(ftp_data_t *ftp) {
 	}
 
 	// make the directory
-	if (ftps_f_mkdir(ftp->path) != FR_OK) {
+	if (FTP_F_MKDIR(ftp->path) != FR_OK) {
 		// go up a level again
 		path_up_a_level(ftp->path);
 
@@ -1145,7 +1233,7 @@ void ftp_cmd_rmd(ftp_data_t *ftp) {
 	DEBUG_PRINT(ftp, "Deleting %s\r\n", ftp->path);
 
 	// file does exist?
-	if (ftps_f_stat(ftp->path, &ftp->finfo) != FR_OK) {
+	if (FTP_F_STAT(ftp->path, &ftp->finfo) != FR_OK) {
 		// go up a level again
 		path_up_a_level(ftp->path);
 
@@ -1155,7 +1243,7 @@ void ftp_cmd_rmd(ftp_data_t *ftp) {
 	}
 
 	// remove file ok?
-	if (ftps_f_unlink(ftp->path) != FR_OK) {
+	if (FTP_F_UNLINK(ftp->path) != FR_OK) {
 		// go up a level again
 		path_up_a_level(ftp->path);
 
@@ -1192,7 +1280,7 @@ static void ftp_cmd_rnfr(ftp_data_t *ftp) {
 	}
 
 	// does the file exist?
-	if (ftps_f_stat(ftp->path_rename, &ftp->finfo) != FR_OK) {
+	if (FTP_F_STAT(ftp->path_rename, &ftp->finfo) != FR_OK) {
 		ftp_send(ftp, "550 file \"%s\" not found\r\n", ftp->parameters);
 		return;
 	}
@@ -1228,7 +1316,7 @@ static void ftp_cmd_rnto(ftp_data_t *ftp) {
 	}
 
 	// does the file exist?
-	if (ftps_f_stat(ftp->path, &ftp->finfo) == FR_OK) {
+	if (FTP_F_STAT(ftp->path, &ftp->finfo) == FR_OK) {
 		ftp_send(ftp, "553 \"%s\" already exists\r\n", ftp->parameters);
 
 		// remove file name from path
@@ -1242,7 +1330,7 @@ static void ftp_cmd_rnto(ftp_data_t *ftp) {
 	DEBUG_PRINT(ftp, "Renaming %s to %s\r\n", ftp->path_rename, ftp->path);
 
 	// rename went ok?
-	if (ftps_f_rename(ftp->path_rename, ftp->path) != FR_OK) {
+	if (FTP_F_RENAME(ftp->path_rename, ftp->path) != FR_OK) {
 		ftp_send(ftp, "451 Rename/move failure\r\n");
 	}
 	else {
@@ -1277,7 +1365,8 @@ static void ftp_cmd_mdtm(ftp_data_t *ftp) {
 		return;
 
 	char * fname;
-	uint16_t date, time;
+	uint16_t date;
+	uint16_t time;
 	uint8_t gettime;
 
 	gettime = date_time_get(ftp->parameters, &date, &time);
@@ -1292,7 +1381,7 @@ static void ftp_cmd_mdtm(ftp_data_t *ftp) {
 		return;
 	}
 
-	if (ftps_f_stat(ftp->path, &ftp->finfo) != FR_OK) {
+	if (FTP_F_STAT(ftp->path, &ftp->finfo) != FR_OK) {
 		// go up a level again
 		path_up_a_level(ftp->path);
 
@@ -1314,7 +1403,7 @@ static void ftp_cmd_mdtm(ftp_data_t *ftp) {
 
 	ftp->finfo.fdate = date;
 	ftp->finfo.ftime = time;
-	if (ftps_f_utime(ftp->path, &ftp->finfo) == FR_OK)
+	if (FTP_F_UTIME(ftp->path, &ftp->finfo) == FR_OK)
 		ftp_send(ftp, "200 Ok\r\n");
 	else
 		ftp_send(ftp, "550 Unable to modify time\r\n");
@@ -1335,13 +1424,13 @@ static void ftp_cmd_size(ftp_data_t *ftp) {
 		return;
 	}
 
-	if (ftps_f_stat(ftp->path, &ftp->finfo) != FR_OK || (ftp->finfo.fattrib & AM_DIR)) {
+	if (FTP_F_STAT(ftp->path, &ftp->finfo) != FR_OK || (ftp->finfo.fattrib & AM_DIR)) {
 		// send error to client
 		ftp_send(ftp, "550 No such file\r\n");
 	}
 	else {
 		ftp_send(ftp, "213 %lu\r\n", ftp->finfo.fsize);
-		ftps_f_close(&ftp->file);
+		FTP_F_CLOSE(&ftp->file);
 	}
 
 	// go up a level again
@@ -1356,7 +1445,7 @@ static void ftp_cmd_site(ftp_data_t *ftp) {
 	if (!strcmp(ftp->parameters, "FREE")) {
 		FATFS * fs;
 		uint32_t free_clust;
-		ftps_f_getfree("0:", &free_clust, &fs);
+		FTP_F_GETFREE("0:", &free_clust, &fs);
 		ftp_send(ftp, "211 %lu MB free of %lu MB capacity\r\n", free_clust * fs->csize >> 11, (fs->n_fatent - 2) * fs->csize >> 11);
 	}
 	else {
@@ -1370,7 +1459,7 @@ static void ftp_cmd_stat(ftp_data_t *ftp) {
 		return;
 
 	// print status
-	ftp_send(ftp, "221 FTP Server status: you will be disconnected after %d minutes of inactivity\r\n", FTP_TIME_OUT_S / 60);
+	ftp_send(ftp, "221 FTP Server status: you will be disconnected after %d minutes of inactivity\r\n", (FTP_SERVER_INACTIVE_CNT * FTP_SERVER_READ_TIMEOUT_MS) / 60000);
 }
 
 static void ftp_cmd_auth(ftp_data_t *ftp) {
@@ -1456,7 +1545,7 @@ static ftp_cmd_t ftpd_commands[] = { //
 static uint8_t ftp_process_command(ftp_data_t *ftp) {
 	// quit command given?
 	if (!strcmp(ftp->command, "QUIT"))
-		return 0;
+		return (0);
 
 	// command pointer
 	ftp_cmd_t *cmd = ftpd_commands;
@@ -1479,7 +1568,7 @@ static uint8_t ftp_process_command(ftp_data_t *ftp) {
 		ftp_send(ftp, "500 Unknown command\r\n");
 
 	// ftp is still running
-	return 1;
+	return (1);
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1487,8 +1576,13 @@ static uint8_t ftp_process_command(ftp_data_t *ftp) {
 //			Main FTP server
 //
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void ftp_service(struct netconn *ctrlcn, ftp_data_t *ftp) {
+/**
+ * Service the FTP server connection that is accepted.
+ *
+ * @param ctrlcn Connection that was created for FTP server
+ * @param ftp The FTP structure containing all variables
+ */
+static void ftp_service(struct netconn *ctrlcn, ftp_data_t *ftp) {
 	uint16_t dummy;
 	ip4_addr_t ippeer;
 
@@ -1518,7 +1612,7 @@ void ftp_service(struct netconn *ctrlcn, ftp_data_t *ftp) {
 	DEBUG_PRINT(ftp, "Client connected!\r\n");
 
 	// Set disconnection timeout to one second
-	netconn_set_recvtimeout(ftp->ctrlconn, 1000);
+	netconn_set_recvtimeout(ftp->ctrlconn, FTP_SERVER_READ_TIMEOUT_MS);
 
 	// loop until quit command
 	while (1) {
@@ -1550,14 +1644,161 @@ void ftp_service(struct netconn *ctrlcn, ftp_data_t *ftp) {
 	DEBUG_PRINT(ftp, "Client disconnected\r\n");
 }
 
+// single ftp connection loop
+static void ftp_task(void *param) {
+	// sanity check
+	if (param == NULL)
+		return;
+
+	// parse parameter
+	server_stru_t *ftp = (server_stru_t*) param;
+
+	// save the instance number
+	ftp->ftp_data.ftp_con_num = ftp->number;
+
+	// callback
+	FTP_CONNECTED_CALLBACK();
+
+	// feedback
+	FTP_LOG_PRINT("FTP %d connected\r\n", ftp->number);
+
+	// service FTP server
+	ftp_service(ftp->ftp_connection, &ftp->ftp_data);
+
+	// delete the connection.
+	netconn_delete(ftp->ftp_connection);
+
+	// reset the socket to be sure
+	ftp->ftp_connection = NULL;
+
+	// feedback
+	FTP_LOG_PRINT("FTP %d disconnected\r\n", ftp->number);
+
+	// callback
+	FTP_DISCONNECTED_CALLBACK();
+
+	// clear handle
+	ftp->task_handle = NULL;
+
+	// delete this task
+	vTaskDelete(NULL);
+}
+
+static void ftp_start_task(server_stru_t *data, uint8_t index) {
+	// set number
+	data->number = index;
+
+	// change name
+	char name[configMAX_TASK_NAME_LEN] = { 0 };
+	snprintf(name, configMAX_TASK_NAME_LEN, "ftp_task_%d", data->number);
+
+	// start task with parameter
+#if FTP_TASK_STATIC == 1
+	data->task_handle = xTaskCreateStatic(ftp_task, name, FTP_TASK_STACK_SIZE, data, FTP_TASK_PRIORITY, data->task_stack, &data->task_static);
+	if (data->task_handle == NULL) {
+		// if creation of the task fails, close and clean up the connection
+		netconn_close(data->ftp_connection);
+		netconn_delete(data->ftp_connection);
+		data->ftp_connection = NULL;
+
+		// feedback to CMS log
+		FTP_LOG_PRINT("%s not started\r\n", name);
+	}
+#else
+	if (xTaskCreate(ftp_task, name, FTP_TASK_STACK_SIZE, data, FTP_TASK_PRIORITY, &data->task_handle) != pdPASS) {
+		// if creation of the task fails, close and clean up the connection
+		netconn_close(data->ftp_connection);
+		netconn_delete(data->ftp_connection);
+		data->ftp_connection = NULL;
+
+		// feedback to CMS log
+		FTP_LOG_PRINT("%s not started\r\n", name);
+	}
+#endif
+	else {
+		// feedback to CMS log
+		FTP_LOG_PRINT("%s started\r\n", name);
+	}
+}
+
+// ftp server task
+void ftp_server(void *argument) {
+	UNUSED(argument);
+	struct netconn *ftp_srv_conn;
+	struct netconn *ftp_client_conn;
+	uint8_t index = 0;
+
+	// Create the TCP connection handle
+	ftp_srv_conn = netconn_new(NETCONN_TCP);
+
+	// feedback
+	if (ftp_srv_conn == NULL) {
+		// error
+		FTP_LOG_PRINT("Failed to create socket\r\n");
+
+		// go back
+		return;
+	}
+
+	// Bind to port 21 (FTP) with default IP address
+	netconn_bind(ftp_srv_conn, NULL, FTP_SERVER_PORT);
+
+	// put the connection into LISTEN state
+	netconn_listen(ftp_srv_conn);
+
+	while (1) {
+		// Wait for incoming connections
+		if (netconn_accept(ftp_srv_conn, &ftp_client_conn) == ERR_OK) {
+			// Look for the first unused connection
+			for (index = 0; index < FTP_NBR_CLIENTS; index++) {
+				if (ftp_links[index].ftp_connection == NULL && ftp_links[index].task_handle == NULL)
+					break;
+			}
+
+			// all connections in use?
+			if (index >= FTP_NBR_CLIENTS) {
+				// tell that no connections are allowed
+				netconn_write(ftp_client_conn, no_conn_allowed, strlen(no_conn_allowed), NETCONN_COPY);
+
+				// delete the connection.
+				netconn_delete(ftp_client_conn);
+
+				// reset the socket to be sure
+				ftp_client_conn = NULL;
+
+				// feedback
+				FTP_LOG_PRINT("FTP connection denied, all connections in use\r\n");
+
+				// wait a while
+				vTaskDelay(500);
+			}
+			// not all connections in use
+			else {
+				// copy client connection
+				ftp_links[index].ftp_connection = ftp_client_conn;
+
+				// zero out client connection
+				ftp_client_conn = NULL;
+
+				// try and start the FTP task for this connection
+				ftp_start_task(&ftp_links[index], index);
+			}
+		}
+	}
+
+	// delete the connection.
+	netconn_delete(ftp_srv_conn);
+}
+
+
 void ftp_set_username(const char *name) {
 	if (name == NULL)
 		return;
-	ftp_user_name = name;
+	strncpy(ftp_user_name, name, FTP_USER_NAME_LEN);
 }
 
 void ftp_set_password(const char *pass) {
 	if (pass == NULL)
 		return;
-	ftp_user_pass = pass;
+	strncpy(ftp_user_pass, pass, FTP_USER_PASS_LEN);
 }
