@@ -131,8 +131,8 @@ typedef struct {
 	ftp_data_t ftp_data;
 } server_stru_t;
 
-static char ftp_user_name[FTP_USER_NAME_LEN] = FTP_USER_NAME_DEFAULT;
-static char ftp_user_pass[FTP_USER_PASS_LEN] = FTP_USER_PASS_DEFAULT;
+static char ftp_user_name[FTP_USER_NAME_LEN + 1] = FTP_USER_NAME_DEFAULT;
+static char ftp_user_pass[FTP_USER_PASS_LEN + 1] = FTP_USER_PASS_DEFAULT;
 static const char *no_conn_allowed = "421 No more connections allowed\r\n";
 static server_stru_t ftp_links[FTP_NBR_CLIENTS] = { 0 };
 // =========================================================
@@ -1118,10 +1118,10 @@ static void ftp_cmd_stor(ftp_data_t *ftp) {
 					break;
 				}
 				temp = rcvbuf_temp->len - buff_free_bytes;
-				if(temp){
+				if (temp) {
 					memcpy(ftp->ftp_buff, rcvbuf_temp->payload + buff_free_bytes, temp);
 					buff_free_bytes = FTP_BUF_SIZE - temp;
-				}else{
+				} else {
 					buff_free_bytes = FTP_BUF_SIZE;
 				}
 			}
