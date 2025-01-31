@@ -21,7 +21,7 @@
 #endif
 
 #ifndef FTP_TASK_STACK_SIZE
-#define FTP_TASK_STACK_SIZE	1536
+#define FTP_TASK_STACK_SIZE	512
 #endif
 
 #ifndef FTP_TASK_PRIORITY
@@ -29,6 +29,21 @@
 #endif
 
 /* *********** LWIP ************** */
+/**
+ * LWIP configuration example for fast file transfer
+ * #define PBUF_POOL_SIZE 16
+ * #define PBUF_POOL_BUFSIZE 1516
+ * #define TCP_MSS 1460
+ * #define TCP_SND_BUF 5840
+ * #define DEFAULT_TCP_RECVMBOX_SIZE 32
+ *
+ * Receive buffer for eth should be set for max tcp size
+ * Amount of buffers should be high for fast file transfer
+ * STM32 eth hal options example:
+ * #define ETH_RX_BUFFER_CNT 32
+ * #define ETH_RX_BUFFER_SIZE 1536
+ */
+
 #ifndef FTP_SERVER_PORT
 #define FTP_SERVER_PORT 21
 #endif
@@ -38,7 +53,7 @@
 #endif
 
 #ifndef FTP_NBR_CLIENTS
-#define FTP_NBR_CLIENTS	1 //same as netbuf limit
+#define FTP_NBR_CLIENTS	1
 #endif
 
 #ifndef FTP_SERVER_READ_TIMEOUT_MS
@@ -57,9 +72,27 @@
 #define FTP_PSV_LISTEN_TIMEOUT_MS 5000
 #endif
 
+#ifndef FTP_STOR_RECV_TIMEOUT_MS
+#define FTP_STOR_RECV_TIMEOUT_MS 5000
+#endif
+
 #ifndef FTP_USE_PASSIVE_MODE
 #define FTP_USE_PASSIVE_MODE 1
 #endif
+
+/* *********** MEMORY ************** */
+/**
+ * FTP main working buffer size
+ *
+ * should be no less than TCP_MSS,
+ * for fast transfer set it high f.e. 32kB,
+ *
+ * IMPORTANT: should be aligned to 512 (FATFS sector size) and no less than 1024,
+ */
+#ifndef FTP_BUF_SIZE_MULT
+#define FTP_BUF_SIZE_MULT 32
+#endif
+
 /* *********** USER/PASS ************** */
 #ifndef FTP_USER_NAME_LEN
 #define FTP_USER_NAME_LEN 32
@@ -102,6 +135,14 @@
 
 #ifndef FTP_DISCONNECTED_CALLBACK
 #define FTP_DISCONNECTED_CALLBACK() do {} while(0)
+#endif
+
+#ifndef FTP_CMD_BEGIN_CALLBACK
+#define FTP_CMD_BEGIN_CALLBACK(pchar_cmd) do {} while(0)
+#endif
+
+#ifndef FTP_CMD_END_CALLBACK
+#define FTP_CMD_END_CALLBACK(pchar_cmd) do {} while(0)
 #endif
 
 #ifndef FTP_ETH_IS_LINK_UP
