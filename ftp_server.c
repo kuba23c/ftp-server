@@ -169,7 +169,8 @@ static void ftp_send(ftp_data_t *ftp, const char *fmt, ...) {
 //    pointer to string
 
 static char* data_time_to_str(char *str, uint16_t date, uint16_t time) {
-	snprintf(str, 25, "%04d%02d%02d%02d%02d%02d", ((date & 0xFE00) >> 9) + 1980, (date & 0x01E0) >> 5, date & 0x001F, (time & 0xF800) >> 11, (time & 0x07E0) >> 5, (time & 0x001F) << 1);
+	snprintf(str, 25, "%04d%02d%02d%02d%02d%02d", ((date & 0xFE00) >> 9) + 1980, (date & 0x01E0) >> 5, date & 0x001F, (time & 0xF800) >> 11,
+			(time & 0x07E0) >> 5, (time & 0x001F) << 1);
 	return (str);
 }
 
@@ -238,6 +239,39 @@ static err_t ftp_read_command(ftp_data_t *ftp) {
 	return (net_err);
 }
 
+static int ftp_parse_command_check(ftp_data_t *ftp) {
+	int ret = 0;
+	char *pbuf;
+	uint16_t buflen;
+
+	// get data from recieved packet
+	netbuf_data(ftp->inbuf, (void**) &pbuf, &buflen);
+	if (buflen != 0) {
+		int8_t i = 0;
+		do {
+			if (!isalpha((uint8_t )pbuf[i])) {
+				break;
+			}
+			ftp->command[i] = pbuf[i];
+			i++;
+		} while (i < buflen && i < (FTP_CMD_SIZE - 1));
+		if (pbuf[i] == ' ') {
+			while (pbuf[i] == ' ') {
+				i++;
+			}
+			while (pbuf[i + ret] != '\n' && pbuf[i + ret] != '\r' && (i + ret) < buflen) {
+				ret++;
+			}
+			if (ret + 1 >= FTP_PARAM_SIZE) {
+				ret = -1;
+			} else {
+				strncpy(ftp->parameters, pbuf + i, ret);
+			}
+		}
+	}
+	return (ret);
+}
+
 // =========================================================
 //
 //             Parse the last command
@@ -248,77 +282,13 @@ static err_t ftp_read_command(ftp_data_t *ftp) {
 //          >0 length of parameters
 
 static int ftp_parse_command(ftp_data_t *ftp) {
-	char *pbuf;
-	uint16_t buflen;
-	int ret = 0;
-	int8_t i;
-
-	// get data from recieved packet
-	netbuf_data(ftp->inbuf, (void**) &pbuf, &buflen);
-
-	// zero the command and parameter buffers
 	memset(ftp->command, 0, FTP_CMD_SIZE);
 	memset(ftp->parameters, 0, FTP_PARAM_SIZE);
 
-	// no data?
-	if (buflen == 0)
-		goto deletebuf;
+	int ret = ftp_parse_command_check(ftp);
 
-	// reset index to zero
-	i = 0;
-
-	// copy command loop
-	do {
-		// command may only contain characters, not the case?
-		if (!isalpha((uint8_t )pbuf[i]))
-			break;
-
-		// copy character
-		ftp->command[i] = pbuf[i];
-
-		// increment index
-		i++;
-	} while (i < buflen && i < (FTP_CMD_SIZE - 1));
-
-	// When the command contains parameters, the character after the
-	// command is a space. If this character is not a space, we only
-	// received a command.
-	if (pbuf[i] != ' ')
-		goto deletebuf;
-
-	// remove leading spaces for parameters
-	while (pbuf[i] == ' ')
-		i++;
-
-	// set return variable to zero, it will contain the string length
-	ret = 0;
-
-	// search for the end of the parameter string
-	while (pbuf[i + ret] != '\n' && pbuf[i + ret] != '\r' && (i + ret) < buflen)
-		ret++;
-
-	// will the parameter data fit the given buffer?
-	if (ret + 1 >= FTP_PARAM_SIZE) {
-		// parameter string does not fit the given buffer, set error code
-		ret = -1;
-
-		//
-		goto deletebuf;
-	}
-
-	// copy parameters from the pbuf
-	strncpy(ftp->parameters, pbuf + i, ret);
-
-	// delete buf tag
-	deletebuf:
-
-	// feedback
 	DEBUG_PRINT(ftp, "Incomming: %s %s\r\n", ftp->command, ftp->parameters);
-
-	// delete buffer
 	netbuf_delete(ftp->inbuf);
-
-	// return error code
 	return (ret);
 }
 
@@ -390,8 +360,7 @@ static int data_con_open(ftp_data_t *ftp) {
 	}
 
 	// feedback
-	DEBUG_PRINT(ftp, "Data conn in %s mode\r\n", (
-			ftp->data_conn_mode == DCM_PASSIVE ? "passive" : "active"));
+	DEBUG_PRINT(ftp, "Data conn in %s mode\r\n", (ftp->data_conn_mode == DCM_PASSIVE ? "passive" : "active"));
 
 	// are we in passive mode?
 	if (ftp->data_conn_mode == DCM_PASSIVE) {
@@ -647,7 +616,8 @@ static void ftp_cmd_pasv(ftp_data_t *ftp) {
 		data_con_close(ftp);
 
 		// reply that we are entering passive mode
-		ftp_send(ftp, "227 Entering Passive Mode (%d,%d,%d,%d,%d,%d).\r\n", ftp->ipserver.addr & 0xFF, (ftp->ipserver.addr >> 8) & 0xFF, (ftp->ipserver.addr >> 16) & 0xFF, (ftp->ipserver.addr >> 24) & 0xFF, ftp->data_port >> 8, ftp->data_port & 255);
+		ftp_send(ftp, "227 Entering Passive Mode (%d,%d,%d,%d,%d,%d).\r\n", ftp->ipserver.addr & 0xFF, (ftp->ipserver.addr >> 8) & 0xFF,
+				(ftp->ipserver.addr >> 16) & 0xFF, (ftp->ipserver.addr >> 24) & 0xFF, ftp->data_port >> 8, ftp->data_port & 255);
 
 		// feedback
 		DEBUG_PRINT(ftp, "Data port set to %u\r\n", ftp->data_port);
@@ -830,13 +800,12 @@ static void ftp_cmd_mlsd(ftp_data_t *ftp) {
 
 		// does the file have a date?
 		if (ftp->finfo.fdate != 0) {
-			snprintf(ftp->ftp_buff, FTP_BUF_SIZE, "Type=%s;Size=%ld;Modify=%s; %s\r\n",
-					ftp->finfo.fattrib & AM_DIR ? "dir" : "file", ftp->finfo.fsize, data_time_to_str(ftp->date_str, ftp->finfo.fdate, ftp->finfo.ftime), ftp->finfo.fname);
+			snprintf(ftp->ftp_buff, FTP_BUF_SIZE, "Type=%s;Size=%ld;Modify=%s; %s\r\n", ftp->finfo.fattrib & AM_DIR ? "dir" : "file", ftp->finfo.fsize,
+					data_time_to_str(ftp->date_str, ftp->finfo.fdate, ftp->finfo.ftime), ftp->finfo.fname);
 		}
 		// file has no date
 		else {
-			snprintf(ftp->ftp_buff, FTP_BUF_SIZE, "Type=%s;Size=%ld; %s\r\n",
-					ftp->finfo.fattrib & AM_DIR ? "dir" : "file", ftp->finfo.fsize, ftp->finfo.fname);
+			snprintf(ftp->ftp_buff, FTP_BUF_SIZE, "Type=%s;Size=%ld; %s\r\n", ftp->finfo.fattrib & AM_DIR ? "dir" : "file", ftp->finfo.fsize, ftp->finfo.fname);
 		}
 
 		// write the data
@@ -1068,6 +1037,7 @@ static void ftp_cmd_stor(ftp_data_t *ftp) {
 	//
 	struct pbuf *rcvbuf = NULL;
 	struct pbuf *rcvbuf_temp = NULL;
+	uint8_t *payload = NULL;
 	int8_t file_err = 0;
 	int8_t con_err = 0;
 	uint32_t bytes_written = 0;
@@ -1090,11 +1060,12 @@ static void ftp_cmd_stor(ftp_data_t *ftp) {
 		}
 
 		rcvbuf_temp = rcvbuf;
+		payload = (uint8_t*) (rcvbuf_temp->payload);
 		while (rcvbuf_temp != NULL) {
 			bytes_transfered += rcvbuf_temp->len;
 
 			if (rcvbuf_temp->len > FTP_BUF_SIZE) {
-				file_err = FTP_F_WRITE(&ftp->file, rcvbuf_temp->payload, rcvbuf_temp->len, (UINT* ) &bytes_written);
+				file_err = FTP_F_WRITE(&ftp->file, payload, rcvbuf_temp->len, (UINT* ) &bytes_written);
 				if (file_err != FR_OK) {
 					break;
 				}
@@ -1104,11 +1075,11 @@ static void ftp_cmd_stor(ftp_data_t *ftp) {
 				}
 			} else if (buff_free_bytes > rcvbuf_temp->len) {
 				temp = FTP_BUF_SIZE - buff_free_bytes;
-				memcpy(ftp->ftp_buff + temp, rcvbuf_temp->payload, rcvbuf_temp->len);
+				memcpy(ftp->ftp_buff + temp, payload, rcvbuf_temp->len);
 				buff_free_bytes -= rcvbuf_temp->len;
 			} else {
 				temp = FTP_BUF_SIZE - buff_free_bytes;
-				memcpy(ftp->ftp_buff + temp, rcvbuf_temp->payload, buff_free_bytes);
+				memcpy(ftp->ftp_buff + temp, payload, buff_free_bytes);
 				file_err = FTP_F_WRITE(&ftp->file, ftp->ftp_buff, FTP_BUF_SIZE, (UINT* ) &bytes_written);
 				if (file_err != FR_OK) {
 					break;
@@ -1119,13 +1090,14 @@ static void ftp_cmd_stor(ftp_data_t *ftp) {
 				}
 				temp = rcvbuf_temp->len - buff_free_bytes;
 				if (temp) {
-					memcpy(ftp->ftp_buff, rcvbuf_temp->payload + buff_free_bytes, temp);
+					memcpy(ftp->ftp_buff, payload + buff_free_bytes, temp);
 					buff_free_bytes = FTP_BUF_SIZE - temp;
 				} else {
 					buff_free_bytes = FTP_BUF_SIZE;
 				}
 			}
 			rcvbuf_temp = rcvbuf_temp->next;
+			payload = (uint8_t*) (rcvbuf_temp->payload);
 		}
 		pbuf_free(rcvbuf);
 
@@ -1454,7 +1426,8 @@ static void ftp_cmd_stat(ftp_data_t *ftp) {
 		return;
 
 	// print status
-	ftp_send(ftp, "221 FTP Server status: you will be disconnected after %d minutes of inactivity\r\n", (FTP_SERVER_INACTIVE_CNT * FTP_SERVER_READ_TIMEOUT_MS) / 60000);
+	ftp_send(ftp, "221 FTP Server status: you will be disconnected after %d minutes of inactivity\r\n",
+			(FTP_SERVER_INACTIVE_CNT * FTP_SERVER_READ_TIMEOUT_MS) / 60000);
 }
 
 static void ftp_cmd_auth(ftp_data_t *ftp) {
@@ -1500,7 +1473,7 @@ static void ftp_cmd_pass(ftp_data_t *ftp) {
 }
 
 static ftp_cmd_t ftpd_commands[] = { //
-{ "PWD", ftp_cmd_pwd }, //
+		{ "PWD", ftp_cmd_pwd }, //
 		{ "CWD", ftp_cmd_cwd }, //
 		{ "CDUP", ftp_cmd_cdup }, //
 		{ "MODE", ftp_cmd_mode }, //
@@ -1529,7 +1502,7 @@ static ftp_cmd_t ftpd_commands[] = { //
 		{ "USER", ftp_cmd_user }, //
 		{ "PASS", ftp_cmd_pass }, //
 		{ NULL, NULL } //
-};
+		};
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //
@@ -1783,7 +1756,7 @@ void ftp_server(void *argument) {
 			}
 		}
 	}
-
+	
 	// delete the connection.
 	netconn_delete(ftp_srv_conn);
 }
