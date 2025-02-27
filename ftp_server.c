@@ -141,6 +141,34 @@ static server_stru_t ftp_links[FTP_NBR_CLIENTS] = { 0 };
 //
 // =========================================================
 
+#undef netconn_write
+
+static err_t wait_for_netconn_write_finish(struct netconn *conn, size_t *bytes_written, size_t size) {
+	uint32_t timeout_cnt = 0;
+	err_t err = ERR_OK;
+	while (*bytes_written != size || conn->state != NETCONN_NONE) {
+		vTaskDelay(1);
+		timeout_cnt++;
+		if (timeout_cnt >= FTP_SERVER_WRITE_TIMEOUT_MS) {
+			err = ERR_TIMEOUT;
+			FTP_LOG_PRINT("NETCONN WRITE TIMEOUT!!!\r\n");
+			break;
+		}
+	}
+	return (err);
+}
+
+err_t netconn_write(struct netconn *conn, const void *dataptr, size_t size) {
+	size_t bytes_written = 0;
+	err_t err = netconn_write_partly(conn, dataptr, size, NETCONN_COPY, &bytes_written);
+	if (err == ERR_INPROGRESS) {
+		err = wait_for_netconn_write_finish(conn, &bytes_written, size);
+	} else if (err != ERR_OK) {
+		FTP_LOG_PRINT("NETCONN WRITE ERROR!!!\r\n");
+	}
+	return (err);
+}
+
 static void ftp_send(ftp_data_t *ftp, const char *fmt, ...) {
 	// Create vaarg list
 	va_list args;
@@ -153,7 +181,7 @@ static void ftp_send(ftp_data_t *ftp, const char *fmt, ...) {
 	va_end(args);
 
 	// send to endpoint
-	if (netconn_write(ftp->ctrlconn, ftp->ftp_buff, strlen(ftp->ftp_buff), NETCONN_COPY) != ERR_OK)
+	if (netconn_write(ftp->ctrlconn, ftp->ftp_buff, strlen(ftp->ftp_buff)) != ERR_OK)
 		DEBUG_PRINT(ftp, "Error sending command!\r\n");
 
 	// debugging
@@ -169,8 +197,7 @@ static void ftp_send(ftp_data_t *ftp, const char *fmt, ...) {
 //    pointer to string
 
 static char* data_time_to_str(char *str, uint16_t date, uint16_t time) {
-	snprintf(str, 25, "%04d%02d%02d%02d%02d%02d", ((date & 0xFE00) >> 9) + 1980, (date & 0x01E0) >> 5, date & 0x001F, (time & 0xF800) >> 11,
-			(time & 0x07E0) >> 5, (time & 0x001F) << 1);
+	snprintf(str, 25, "%04d%02d%02d%02d%02d%02d", ((date & 0xFE00) >> 9) + 1980, (date & 0x01E0) >> 5, date & 0x001F, (time & 0xF800) >> 11, (time & 0x07E0) >> 5, (time & 0x001F) << 1);
 	return (str);
 }
 
@@ -360,7 +387,8 @@ static int data_con_open(ftp_data_t *ftp) {
 	}
 
 	// feedback
-	DEBUG_PRINT(ftp, "Data conn in %s mode\r\n", (ftp->data_conn_mode == DCM_PASSIVE ? "passive" : "active"));
+	DEBUG_PRINT(ftp, "Data conn in %s mode\r\n", (
+			ftp->data_conn_mode == DCM_PASSIVE ? "passive" : "active"));
 
 	// are we in passive mode?
 	if (ftp->data_conn_mode == DCM_PASSIVE) {
@@ -378,6 +406,8 @@ static int data_con_open(ftp_data_t *ftp) {
 			DEBUG_PRINT(ftp, "Error in data conn: netconn_accept\r\n");
 			return (-1);
 		}
+		netconn_set_recvtimeout(ftp->dataconn, FTP_SERVER_READ_TIMEOUT_MS);
+		netconn_set_sendtimeout(ftp->dataconn, FTP_SERVER_WRITE_TIMEOUT_MS);
 	}
 	// we are in active mode
 	else {
@@ -397,7 +427,8 @@ static int data_con_open(ftp_data_t *ftp) {
 			ftp->dataconn = NULL;
 			return (-1);
 		}
-
+		netconn_set_recvtimeout(ftp->dataconn, FTP_SERVER_READ_TIMEOUT_MS);
+		netconn_set_sendtimeout(ftp->dataconn, FTP_SERVER_WRITE_TIMEOUT_MS);
 		// did connection fail?
 		if (netconn_connect(ftp->dataconn, &ftp->ipclient, ftp->data_port) != ERR_OK) {
 			DEBUG_PRINT(ftp, "Error in data conn: netconn_connect\r\n");
@@ -616,8 +647,7 @@ static void ftp_cmd_pasv(ftp_data_t *ftp) {
 		data_con_close(ftp);
 
 		// reply that we are entering passive mode
-		ftp_send(ftp, "227 Entering Passive Mode (%d,%d,%d,%d,%d,%d).\r\n", ftp->ipserver.addr & 0xFF, (ftp->ipserver.addr >> 8) & 0xFF,
-				(ftp->ipserver.addr >> 16) & 0xFF, (ftp->ipserver.addr >> 24) & 0xFF, ftp->data_port >> 8, ftp->data_port & 255);
+		ftp_send(ftp, "227 Entering Passive Mode (%d,%d,%d,%d,%d,%d).\r\n", ftp->ipserver.addr & 0xFF, (ftp->ipserver.addr >> 8) & 0xFF, (ftp->ipserver.addr >> 16) & 0xFF, (ftp->ipserver.addr >> 24) & 0xFF, ftp->data_port >> 8, ftp->data_port & 255);
 
 		// feedback
 		DEBUG_PRINT(ftp, "Data port set to %u\r\n", ftp->data_port);
@@ -755,7 +785,7 @@ static void ftp_cmd_list(ftp_data_t *ftp) {
 			snprintf(ftp->ftp_buff, FTP_BUF_SIZE, "+r,s%ld,\t%s\r\n", ftp->finfo.fsize, ftp->finfo.fname);
 
 		// write data to endpoint
-		netconn_write(ftp->dataconn, ftp->ftp_buff, strlen(ftp->ftp_buff), NETCONN_COPY);
+		netconn_write(ftp->dataconn, ftp->ftp_buff, strlen(ftp->ftp_buff));
 	}
 
 	// close data connection
@@ -800,16 +830,17 @@ static void ftp_cmd_mlsd(ftp_data_t *ftp) {
 
 		// does the file have a date?
 		if (ftp->finfo.fdate != 0) {
-			snprintf(ftp->ftp_buff, FTP_BUF_SIZE, "Type=%s;Size=%ld;Modify=%s; %s\r\n", ftp->finfo.fattrib & AM_DIR ? "dir" : "file", ftp->finfo.fsize,
-					data_time_to_str(ftp->date_str, ftp->finfo.fdate, ftp->finfo.ftime), ftp->finfo.fname);
+			snprintf(ftp->ftp_buff, FTP_BUF_SIZE, "Type=%s;Size=%ld;Modify=%s; %s\r\n",
+					ftp->finfo.fattrib & AM_DIR ? "dir" : "file", ftp->finfo.fsize, data_time_to_str(ftp->date_str, ftp->finfo.fdate, ftp->finfo.ftime), ftp->finfo.fname);
 		}
 		// file has no date
 		else {
-			snprintf(ftp->ftp_buff, FTP_BUF_SIZE, "Type=%s;Size=%ld; %s\r\n", ftp->finfo.fattrib & AM_DIR ? "dir" : "file", ftp->finfo.fsize, ftp->finfo.fname);
+			snprintf(ftp->ftp_buff, FTP_BUF_SIZE, "Type=%s;Size=%ld; %s\r\n",
+					ftp->finfo.fattrib & AM_DIR ? "dir" : "file", ftp->finfo.fsize, ftp->finfo.fname);
 		}
 
 		// write the data
-		netconn_write(ftp->dataconn, ftp->ftp_buff, strlen(ftp->ftp_buff), NETCONN_COPY);
+		netconn_write(ftp->dataconn, ftp->ftp_buff, strlen(ftp->ftp_buff));
 
 		// increment variable
 		nm++;
@@ -958,7 +989,7 @@ static void ftp_cmd_retr(ftp_data_t *ftp) {
 			break;
 
 		// write data to socket
-		err_t con_err = netconn_write(ftp->dataconn, ftp->ftp_buff, bytes_read, NETCONN_COPY);
+		err_t con_err = netconn_write(ftp->dataconn, ftp->ftp_buff, bytes_read);
 		if (con_err != ERR_OK) {
 			ftp_send(ftp, "426 Error during file transfer: %d\r\n", con_err);
 			break;
@@ -1426,8 +1457,7 @@ static void ftp_cmd_stat(ftp_data_t *ftp) {
 		return;
 
 	// print status
-	ftp_send(ftp, "221 FTP Server status: you will be disconnected after %d minutes of inactivity\r\n",
-			(FTP_SERVER_INACTIVE_CNT * FTP_SERVER_READ_TIMEOUT_MS) / 60000);
+	ftp_send(ftp, "221 FTP Server status: you will be disconnected after %d minutes of inactivity\r\n", (FTP_SERVER_INACTIVE_CNT * FTP_SERVER_READ_TIMEOUT_MS) / 60000);
 }
 
 static void ftp_cmd_auth(ftp_data_t *ftp) {
@@ -1473,36 +1503,36 @@ static void ftp_cmd_pass(ftp_data_t *ftp) {
 }
 
 static ftp_cmd_t ftpd_commands[] = { //
-		{ "PWD", ftp_cmd_pwd }, //
-		{ "CWD", ftp_cmd_cwd }, //
-		{ "CDUP", ftp_cmd_cdup }, //
-		{ "MODE", ftp_cmd_mode }, //
-		{ "STRU", ftp_cmd_stru }, //
-		{ "TYPE", ftp_cmd_type }, //
-		{ "PASV", ftp_cmd_pasv }, //
-		{ "PORT", ftp_cmd_port }, //
-		{ "NLST", ftp_cmd_list }, //
-		{ "LIST", ftp_cmd_list }, //
-		{ "MLSD", ftp_cmd_mlsd }, //
-		{ "DELE", ftp_cmd_dele }, //
-		{ "NOOP", ftp_cmd_noop }, //
-		{ "RETR", ftp_cmd_retr }, //
-		{ "STOR", ftp_cmd_stor }, //
-		{ "MKD", ftp_cmd_mkd }, //
-		{ "RMD", ftp_cmd_rmd }, //
-		{ "RNFR", ftp_cmd_rnfr }, //
-		{ "RNTO", ftp_cmd_rnto }, //
-		{ "FEAT", ftp_cmd_feat }, //
-		{ "MDTM", ftp_cmd_mdtm }, //
-		{ "SIZE", ftp_cmd_size }, //
-		{ "SITE", ftp_cmd_site }, //
-		{ "STAT", ftp_cmd_stat }, //
-		{ "SYST", ftp_cmd_syst }, //
-		{ "AUTH", ftp_cmd_auth }, //
-		{ "USER", ftp_cmd_user }, //
-		{ "PASS", ftp_cmd_pass }, //
-		{ NULL, NULL } //
-		};
+{ "PWD", ftp_cmd_pwd }, //
+{ "CWD", ftp_cmd_cwd }, //
+{ "CDUP", ftp_cmd_cdup }, //
+{ "MODE", ftp_cmd_mode }, //
+{ "STRU", ftp_cmd_stru }, //
+{ "TYPE", ftp_cmd_type }, //
+{ "PASV", ftp_cmd_pasv }, //
+{ "PORT", ftp_cmd_port }, //
+{ "NLST", ftp_cmd_list }, //
+{ "LIST", ftp_cmd_list }, //
+{ "MLSD", ftp_cmd_mlsd }, //
+{ "DELE", ftp_cmd_dele }, //
+{ "NOOP", ftp_cmd_noop }, //
+{ "RETR", ftp_cmd_retr }, //
+{ "STOR", ftp_cmd_stor }, //
+{ "MKD", ftp_cmd_mkd }, //
+{ "RMD", ftp_cmd_rmd }, //
+{ "RNFR", ftp_cmd_rnfr }, //
+{ "RNTO", ftp_cmd_rnto }, //
+{ "FEAT", ftp_cmd_feat }, //
+{ "MDTM", ftp_cmd_mdtm }, //
+{ "SIZE", ftp_cmd_size }, //
+{ "SITE", ftp_cmd_site }, //
+{ "STAT", ftp_cmd_stat }, //
+{ "SYST", ftp_cmd_syst }, //
+{ "AUTH", ftp_cmd_auth }, //
+{ "USER", ftp_cmd_user }, //
+{ "PASS", ftp_cmd_pass }, //
+{ NULL, NULL } //
+};
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //
@@ -1575,15 +1605,15 @@ static void ftp_service(struct netconn *ctrlcn, ftp_data_t *ftp) {
 	//  Get the local and peer IP
 	netconn_addr(ftp->ctrlconn, &ftp->ipserver, &dummy);
 	netconn_peer(ftp->ctrlconn, &ippeer, &dummy);
+	// Set disconnection timeout to one second
+	netconn_set_recvtimeout(ftp->ctrlconn, FTP_SERVER_READ_TIMEOUT_MS);
+	netconn_set_sendtimeout(ftp->ctrlconn, FTP_SERVER_WRITE_TIMEOUT_MS);
 
 	// send welcome message
 	ftp_send(ftp, "220 -> CMS FTP Server, FTP Version %s\r\n", FTP_VERSION);
 
 	// feedback
 	DEBUG_PRINT(ftp, "Client connected!\r\n");
-
-	// Set disconnection timeout to one second
-	netconn_set_recvtimeout(ftp->ctrlconn, FTP_SERVER_READ_TIMEOUT_MS);
 
 	// loop until quit command
 	while (1) {
@@ -1729,7 +1759,9 @@ void ftp_server(void *argument) {
 			// all connections in use?
 			if (index >= FTP_NBR_CLIENTS) {
 				// tell that no connections are allowed
-				netconn_write(ftp_client_conn, no_conn_allowed, strlen(no_conn_allowed), NETCONN_COPY);
+				netconn_set_recvtimeout(ftp_client_conn, FTP_SERVER_READ_TIMEOUT_MS);
+				netconn_set_sendtimeout(ftp_client_conn, FTP_SERVER_WRITE_TIMEOUT_MS);
+				netconn_write(ftp_client_conn, no_conn_allowed, strlen(no_conn_allowed));
 
 				// delete the connection.
 				netconn_delete(ftp_client_conn);
@@ -1756,7 +1788,7 @@ void ftp_server(void *argument) {
 			}
 		}
 	}
-	
+
 	// delete the connection.
 	netconn_delete(ftp_srv_conn);
 }
