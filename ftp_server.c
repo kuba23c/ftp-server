@@ -134,7 +134,7 @@ typedef struct {
 static char ftp_user_name[FTP_USER_NAME_LEN + 1] = FTP_USER_NAME_DEFAULT;
 static char ftp_user_pass[FTP_USER_PASS_LEN + 1] = FTP_USER_PASS_DEFAULT;
 static const char *no_conn_allowed = "421 No more connections allowed\r\n";
-static server_stru_t ftp_links[FTP_NBR_CLIENTS] = { 0 };
+FTP_STRUCT_MEM_SECTION(static server_stru_t ftp_links[FTP_NBR_CLIENTS]) = {0};
 // =========================================================
 //
 //              Send a response to the client
@@ -197,7 +197,8 @@ static void ftp_send(ftp_data_t *ftp, const char *fmt, ...) {
 //    pointer to string
 
 static char* data_time_to_str(char *str, uint16_t date, uint16_t time) {
-	snprintf(str, 25, "%04d%02d%02d%02d%02d%02d", ((date & 0xFE00) >> 9) + 1980, (date & 0x01E0) >> 5, date & 0x001F, (time & 0xF800) >> 11, (time & 0x07E0) >> 5, (time & 0x001F) << 1);
+	snprintf(str, 25, "%04d%02d%02d%02d%02d%02d", ((date & 0xFE00) >> 9) + 1980, (date & 0x01E0) >> 5, date & 0x001F, (time & 0xF800) >> 11,
+			(time & 0x07E0) >> 5, (time & 0x001F) << 1);
 	return (str);
 }
 
@@ -216,7 +217,7 @@ static int8_t date_time_get(char *parameters, uint16_t *pdate, uint16_t *ptime) 
 	if (strlen(parameters) < 15 || parameters[14] != ' ')
 		return (0);
 	for (uint8_t i = 0; i < 14; i++)
-		if (!isdigit((uint8_t )parameters[i]))
+		if (!isdigit((uint8_t ) parameters[i]))
 			return (0);
 
 	parameters[14] = 0;
@@ -276,7 +277,7 @@ static int ftp_parse_command_check(ftp_data_t *ftp) {
 	if (buflen != 0) {
 		int8_t i = 0;
 		do {
-			if (!isalpha((uint8_t )pbuf[i])) {
+			if (!isalpha((uint8_t ) pbuf[i])) {
 				break;
 			}
 			ftp->command[i] = pbuf[i];
@@ -387,8 +388,7 @@ static int data_con_open(ftp_data_t *ftp) {
 	}
 
 	// feedback
-	DEBUG_PRINT(ftp, "Data conn in %s mode\r\n", (
-			ftp->data_conn_mode == DCM_PASSIVE ? "passive" : "active"));
+	DEBUG_PRINT(ftp, "Data conn in %s mode\r\n", (ftp->data_conn_mode == DCM_PASSIVE ? "passive" : "active"));
 
 	// are we in passive mode?
 	if (ftp->data_conn_mode == DCM_PASSIVE) {
@@ -647,7 +647,8 @@ static void ftp_cmd_pasv(ftp_data_t *ftp) {
 		data_con_close(ftp);
 
 		// reply that we are entering passive mode
-		ftp_send(ftp, "227 Entering Passive Mode (%d,%d,%d,%d,%d,%d).\r\n", ftp->ipserver.addr & 0xFF, (ftp->ipserver.addr >> 8) & 0xFF, (ftp->ipserver.addr >> 16) & 0xFF, (ftp->ipserver.addr >> 24) & 0xFF, ftp->data_port >> 8, ftp->data_port & 255);
+		ftp_send(ftp, "227 Entering Passive Mode (%d,%d,%d,%d,%d,%d).\r\n", ftp->ipserver.addr & 0xFF, (ftp->ipserver.addr >> 8) & 0xFF,
+				(ftp->ipserver.addr >> 16) & 0xFF, (ftp->ipserver.addr >> 24) & 0xFF, ftp->data_port >> 8, ftp->data_port & 255);
 
 		// feedback
 		DEBUG_PRINT(ftp, "Data port set to %u\r\n", ftp->data_port);
@@ -830,13 +831,12 @@ static void ftp_cmd_mlsd(ftp_data_t *ftp) {
 
 		// does the file have a date?
 		if (ftp->finfo.fdate != 0) {
-			snprintf(ftp->ftp_buff, FTP_BUF_SIZE, "Type=%s;Size=%ld;Modify=%s; %s\r\n",
-					ftp->finfo.fattrib & AM_DIR ? "dir" : "file", ftp->finfo.fsize, data_time_to_str(ftp->date_str, ftp->finfo.fdate, ftp->finfo.ftime), ftp->finfo.fname);
+			snprintf(ftp->ftp_buff, FTP_BUF_SIZE, "Type=%s;Size=%ld;Modify=%s; %s\r\n", ftp->finfo.fattrib & AM_DIR ? "dir" : "file", ftp->finfo.fsize,
+					data_time_to_str(ftp->date_str, ftp->finfo.fdate, ftp->finfo.ftime), ftp->finfo.fname);
 		}
 		// file has no date
 		else {
-			snprintf(ftp->ftp_buff, FTP_BUF_SIZE, "Type=%s;Size=%ld; %s\r\n",
-					ftp->finfo.fattrib & AM_DIR ? "dir" : "file", ftp->finfo.fsize, ftp->finfo.fname);
+			snprintf(ftp->ftp_buff, FTP_BUF_SIZE, "Type=%s;Size=%ld; %s\r\n", ftp->finfo.fattrib & AM_DIR ? "dir" : "file", ftp->finfo.fsize, ftp->finfo.fname);
 		}
 
 		// write the data
@@ -1457,7 +1457,8 @@ static void ftp_cmd_stat(ftp_data_t *ftp) {
 		return;
 
 	// print status
-	ftp_send(ftp, "221 FTP Server status: you will be disconnected after %d minutes of inactivity\r\n", (FTP_SERVER_INACTIVE_CNT * FTP_SERVER_READ_TIMEOUT_MS) / 60000);
+	ftp_send(ftp, "221 FTP Server status: you will be disconnected after %d minutes of inactivity\r\n",
+			(FTP_SERVER_INACTIVE_CNT * FTP_SERVER_READ_TIMEOUT_MS) / 60000);
 }
 
 static void ftp_cmd_auth(ftp_data_t *ftp) {
@@ -1503,36 +1504,36 @@ static void ftp_cmd_pass(ftp_data_t *ftp) {
 }
 
 static ftp_cmd_t ftpd_commands[] = { //
-{ "PWD", ftp_cmd_pwd }, //
-{ "CWD", ftp_cmd_cwd }, //
-{ "CDUP", ftp_cmd_cdup }, //
-{ "MODE", ftp_cmd_mode }, //
-{ "STRU", ftp_cmd_stru }, //
-{ "TYPE", ftp_cmd_type }, //
-{ "PASV", ftp_cmd_pasv }, //
-{ "PORT", ftp_cmd_port }, //
-{ "NLST", ftp_cmd_list }, //
-{ "LIST", ftp_cmd_list }, //
-{ "MLSD", ftp_cmd_mlsd }, //
-{ "DELE", ftp_cmd_dele }, //
-{ "NOOP", ftp_cmd_noop }, //
-{ "RETR", ftp_cmd_retr }, //
-{ "STOR", ftp_cmd_stor }, //
-{ "MKD", ftp_cmd_mkd }, //
-{ "RMD", ftp_cmd_rmd }, //
-{ "RNFR", ftp_cmd_rnfr }, //
-{ "RNTO", ftp_cmd_rnto }, //
-{ "FEAT", ftp_cmd_feat }, //
-{ "MDTM", ftp_cmd_mdtm }, //
-{ "SIZE", ftp_cmd_size }, //
-{ "SITE", ftp_cmd_site }, //
-{ "STAT", ftp_cmd_stat }, //
-{ "SYST", ftp_cmd_syst }, //
-{ "AUTH", ftp_cmd_auth }, //
-{ "USER", ftp_cmd_user }, //
-{ "PASS", ftp_cmd_pass }, //
-{ NULL, NULL } //
-};
+		{ "PWD", ftp_cmd_pwd }, //
+		{ "CWD", ftp_cmd_cwd }, //
+		{ "CDUP", ftp_cmd_cdup }, //
+		{ "MODE", ftp_cmd_mode }, //
+		{ "STRU", ftp_cmd_stru }, //
+		{ "TYPE", ftp_cmd_type }, //
+		{ "PASV", ftp_cmd_pasv }, //
+		{ "PORT", ftp_cmd_port }, //
+		{ "NLST", ftp_cmd_list }, //
+		{ "LIST", ftp_cmd_list }, //
+		{ "MLSD", ftp_cmd_mlsd }, //
+		{ "DELE", ftp_cmd_dele }, //
+		{ "NOOP", ftp_cmd_noop }, //
+		{ "RETR", ftp_cmd_retr }, //
+		{ "STOR", ftp_cmd_stor }, //
+		{ "MKD", ftp_cmd_mkd }, //
+		{ "RMD", ftp_cmd_rmd }, //
+		{ "RNFR", ftp_cmd_rnfr }, //
+		{ "RNTO", ftp_cmd_rnto }, //
+		{ "FEAT", ftp_cmd_feat }, //
+		{ "MDTM", ftp_cmd_mdtm }, //
+		{ "SIZE", ftp_cmd_size }, //
+		{ "SITE", ftp_cmd_site }, //
+		{ "STAT", ftp_cmd_stat }, //
+		{ "SYST", ftp_cmd_syst }, //
+		{ "AUTH", ftp_cmd_auth }, //
+		{ "USER", ftp_cmd_user }, //
+		{ "PASS", ftp_cmd_pass }, //
+		{ NULL, NULL } //
+		};
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //
@@ -1788,7 +1789,7 @@ void ftp_server(void *argument) {
 			}
 		}
 	}
-
+	
 	// delete the connection.
 	netconn_delete(ftp_srv_conn);
 }

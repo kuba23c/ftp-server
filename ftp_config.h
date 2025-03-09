@@ -97,6 +97,10 @@
 #define FTP_BUF_SIZE_MULT 32
 #endif
 
+#ifndef FTP_STRUCT_MEM_SECTION
+#define FTP_STRUCT_MEM_SECTION(f)  f
+#endif
+
 /* *********** USER/PASS ************** */
 #ifndef FTP_USER_NAME_LEN
 #define FTP_USER_NAME_LEN 32
