@@ -8,30 +8,57 @@
 #ifndef _FTP_SERVER_H_
 #define _FTP_SERVER_H_
 
-/**
- * Setter functions for username and password
- */
-extern void ftp_set_username(const char *name);
-extern void ftp_set_password(const char *pass);
+typedef enum {
+	FTP_IDLE,
+	FTP_STARTING,
+	FTP_RUNNING,
+	FTP_STOPPING,
+	FTP_ERROR_STOPPING,
+	FTP_ERROR
+} ftp_status_t;
 
-/**
- * Start the FTP server.
- *
- * This code creates a socket on port 21 to listen for incoming
- * FTP client connections. If this creation fails the code returns
- * Immediately. If the socket is created the task continues.
- *
- * The task loops indefinitely and waits for connections. When a
- * connection is found a port is assigned to the incoming client.
- * A separate task is started for each connection which handles
- * The FTP commands. When the client disconnects the task is
- * stopped.
- *
- * An incoming connection is denied when:
- * - The memory on the CMS is not available
- * - The maximum number of clients is connected
- * - The application is running
- */
-void ftp_server(void *argument);
+typedef enum {
+	FTP_ERROR_SERVER_NETCONN_NEW,
+	FTP_ERROR_PORT_IS_ZERO,
+	FTP_ERROR_BIND_TO_PORT,
+	FTP_ERROR_SERVER_NETCONN_LISTEN,
+	FTP_ERROR_SERVER_NETCONN_DELETE,
+	FTP_ERROR_CLIENT_NETCONN_WRITE,
+	FTP_ERROR_CLIENT_NETCONN_DELETE,
+	FTP_ERROR_NOT_ALL_TASK_DISABLED,
+	FTP_ERROR_LISTEN_DATA_NETCONN_NEW,
+	FTP_ERROR_LISTEN_DATA_NETCONN_BIND,
+	FTP_ERROR_LISTEN_DATA_NETCONN_LISTEN,
+	FTP_ERROR_LISTEN_DATA_NETCONN_CLOSE,
+	FTP_ERROR_LISTEN_DATA_NETCONN_DELETE,
+	FTP_ERROR_DATA_NETCONN_NEW,
+	FTP_ERROR_DATA_NETCONN_BIND,
+	FTP_ERROR_DATA_NETCONN_CLOSE,
+	FTP_ERROR_DATA_NETCONN_DELETE,
+} ftp_error_t;
+
+typedef struct {
+	uint8_t clients_active;
+	uint8_t clients_max;
+	uint32_t clients_connected;
+	uint32_t clients_disconnected;
+	uint32_t files_send_successfully;
+	uint32_t files_send_faild;
+	uint32_t files_received_successfully;
+	uint32_t files_received_faild;
+} ftp_stats_t;
+
+void ftp_set_username(const char *name);
+void ftp_set_password(const char *pass);
+void ftp_set_port(uint16_t port);
+uint16_t ftp_get_port(void);
+ftp_status_t ftp_get_status(void);
+uint32_t ftp_get_errors(void);
+
+void ftp_init(void);
+void ftp_start(void);
+void ftp_stop(void);
+void ftp_clear_errors(void);
+const ftp_stats_t* ftp_get_stats(void);
 
 #endif /* ETH_FTP_FTP_SERVER_H_ */

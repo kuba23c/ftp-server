@@ -15,19 +15,29 @@
 #define FTP_LOG_PRINT(...) do {} while(0)
 #endif
 
+#ifndef FTP_CRITICAL_ERROR_HANDLER
+#define FTP_CRITICAL_ERROR_HANDLER() do {} while(1)
+#endif
 /* *********** FREERTOS TASK ************** */
-#ifndef FTP_TASK_STATIC
-#define FTP_TASK_STATIC	0
+#ifndef FTP_CLIENT_TASK_STATIC
+#define FTP_CLIENT_TASK_STATIC	0
 #endif
 
-#ifndef FTP_TASK_STACK_SIZE
-#define FTP_TASK_STACK_SIZE	512
+#ifndef FTP_CLIENT_TASK_STACK_SIZE
+#define FTP_CLIENT_TASK_STACK_SIZE	512
 #endif
 
-#ifndef FTP_TASK_PRIORITY
-#define FTP_TASK_PRIORITY 24
+#ifndef FTP_CLIENT_TASK_PRIORITY
+#define FTP_CLIENT_TASK_PRIORITY 24
 #endif
 
+#ifndef FTP_SERVER_TASK_STACK_SIZE
+#define FTP_SERVER_TASK_STACK_SIZE	1024
+#endif
+
+#ifndef FTP_SERVER_TASK_PRIORITY
+#define FTP_SERVER_TASK_PRIORITY 24
+#endif
 /* *********** LWIP ************** */
 /**
  * LWIP configuration example for fast file transfer
@@ -69,7 +79,7 @@
 #endif
 
 #ifndef FTP_PSV_ACCEPT_TIMEOUT_MS
-#define FTP_PSV_ACCEPT_TIMEOUT_MS 500
+#define FTP_PSV_ACCEPT_TIMEOUT_MS 1000
 #endif
 
 #ifndef FTP_PSV_LISTEN_TIMEOUT_MS
@@ -123,6 +133,7 @@
 #include "fatfs.h"
 #define FTP_F_STAT(path, fno) 				f_stat(path, fno)
 #define FTP_F_OPENDIR(dp, path) 			f_opendir(dp, path)
+#define FTP_F_CLOSEDIR(dp)					f_closedir(dp)
 #define FTP_F_READDIR(dp, fno) 				f_readdir(dp, fno)
 #define FTP_F_UNLINK(path) 					f_unlink(path)
 #define FTP_F_OPEN(fp, path, mode) 			f_open(fp, path, mode)
