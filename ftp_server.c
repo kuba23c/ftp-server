@@ -20,7 +20,6 @@
 #include "ftp_server.h"
 #include "lwip.h"
 #include "FreeRTOS.h"
-#include "ftp_config.h"
 
 // stdlib
 #include <string.h>
@@ -152,7 +151,7 @@ static char ftp_user_name[FTP_USER_NAME_LEN + 1] = FTP_USER_NAME_DEFAULT;
 static char ftp_user_pass[FTP_USER_PASS_LEN + 1] = FTP_USER_PASS_DEFAULT;
 static ftp_t FTP = { 0 };
 static const char *no_conn_allowed = "421 No more connections allowed\r\n";
-FTP_STRUCT_MEM_SECTION(static server_stru_t ftp_links[FTP_NBR_CLIENTS]) = {0};
+FTP_STRUCT_MEM_SECTION(static server_stru_t ftp_links[FTP_NBR_CLIENTS]) = {0 };
 // =========================================================
 //
 //              Send a response to the client
@@ -264,7 +263,7 @@ static ftp_result_t ftp_read_command(ftp_data_t *ftp, bool *stop) {
 	ftp_result_t res = FTP_RES_OK;
 	err_t err = ERR_OK;
 	for (uint32_t i = 0; i < FTP_SERVER_INACTIVE_CNT; i++) {
-		if (*stop == true || FTP.stats == FTP_ERROR || FTP.stats == FTP_ERROR_STOPPING) {
+		if (*stop == true || FTP.status == FTP_ERROR || FTP.status == FTP_ERROR_STOPPING) {
 			res = FTP_RES_ERROR;
 			DEBUG_PRINT(ftp, "NETCONN CLIENT STOP!\r\n");
 			break;
@@ -868,7 +867,7 @@ static ftp_result_t ftp_cmd_retr(ftp_data_t *ftp) {
 	int bytes_transfered = 0;
 	uint32_t bytes_read = 1;
 	while (1) {
-		if (FTP_F_READ(&ftp->file, ftp->ftp_buff, TCP_MSS, (UINT *) &bytes_read) != FR_OK) {
+		if (FTP_F_READ(&ftp->file, ftp->ftp_buff, TCP_MSS, (UINT*) &bytes_read) != FR_OK) {
 			if (ftp_send(ftp, "451 Communication error during transfer\r\n") != FTP_RES_OK) {
 				FTP_F_CLOSE(&ftp->file);
 				path_up_a_level(ftp->path);
@@ -940,7 +939,7 @@ static ftp_result_t ftp_cmd_stor(ftp_data_t *ftp) {
 
 				if (rcvbuf_temp->len > FTP_BUF_SIZE) {
 					uint32_t bytes_written = 0;
-					file_err = FTP_F_WRITE(&ftp->file, payload, rcvbuf_temp->len, (UINT* ) &bytes_written);
+					file_err = FTP_F_WRITE(&ftp->file, payload, rcvbuf_temp->len, (UINT*) &bytes_written);
 					if (file_err != FR_OK) {
 						break;
 					}
@@ -956,7 +955,7 @@ static ftp_result_t ftp_cmd_stor(ftp_data_t *ftp) {
 					uint32_t used_bytes = FTP_BUF_SIZE - buff_free_bytes;
 					memcpy(ftp->ftp_buff + used_bytes, payload, buff_free_bytes);
 					uint32_t bytes_written = 0;
-					file_err = FTP_F_WRITE(&ftp->file, ftp->ftp_buff, FTP_BUF_SIZE, (UINT* ) &bytes_written);
+					file_err = FTP_F_WRITE(&ftp->file, ftp->ftp_buff, FTP_BUF_SIZE, (UINT*) &bytes_written);
 					if (file_err != FR_OK) {
 						break;
 					}
@@ -990,7 +989,7 @@ static ftp_result_t ftp_cmd_stor(ftp_data_t *ftp) {
 			if (buff_free_bytes != FTP_BUF_SIZE) {
 				uint32_t rest_bytes = FTP_BUF_SIZE - buff_free_bytes;
 				uint32_t bytes_written = 0;
-				file_err = FTP_F_WRITE(&ftp->file, ftp->ftp_buff, rest_bytes, (UINT* ) &bytes_written);
+				file_err = FTP_F_WRITE(&ftp->file, ftp->ftp_buff, rest_bytes, (UINT*) &bytes_written);
 				if (rest_bytes != bytes_written) {
 					file_err = FR_INT_ERR;
 				}
@@ -1174,96 +1173,70 @@ static ftp_result_t ftp_cmd_mdtm(ftp_data_t *ftp) {
 }
 
 static ftp_result_t ftp_cmd_size(ftp_data_t *ftp) {
-	// are we not yet logged in?
-	if (!FTP_IS_LOGGED_IN(ftp))
-		return;
-
-	if (strlen(ftp->parameters) == 0) {
-		ftp_send(ftp, "501 No file name\r\n");
-		return;
+	if (!FTP_IS_LOGGED_IN(ftp)) {
+		return (FTP_RES_OK);
 	}
 
+	if (strlen(ftp->parameters) == 0) {
+		return (ftp_send(ftp, "501 No file name\r\n"));
+	}
 	if (!path_build(ftp->path, ftp->parameters)) {
-		ftp_send(ftp, "500 Command line too long\r\n");
-		return;
+		return (ftp_send(ftp, "500 Command line too long\r\n"));
 	}
 
 	if (FTP_F_STAT(ftp->path, &ftp->finfo) != FR_OK || (ftp->finfo.fattrib & AM_DIR)) {
-		// send error to client
-		ftp_send(ftp, "550 No such file\r\n");
+		path_up_a_level(ftp->path);
+		return (ftp_send(ftp, "550 No such file\r\n"));
 	} else {
-		ftp_send(ftp, "213 %lu\r\n", ftp->finfo.fsize);
-		FTP_F_CLOSE(&ftp->file);
+		path_up_a_level(ftp->path);
+		return (ftp_send(ftp, "213 %lu\r\n", ftp->finfo.fsize));
 	}
-
-	// go up a level again
-	path_up_a_level(ftp->path);
 }
 
-static void ftp_cmd_site(ftp_data_t *ftp) {
-	// are we not yet logged in?
-	if (!FTP_IS_LOGGED_IN(ftp))
-		return;
+static ftp_result_t ftp_cmd_site(ftp_data_t *ftp) {
+	if (!FTP_IS_LOGGED_IN(ftp)) {
+		return (FTP_RES_OK);
+	}
 
 	if (!strcmp(ftp->parameters, "FREE")) {
 		FATFS *fs;
 		uint32_t free_clust;
 		FTP_F_GETFREE("0:", &free_clust, &fs);
-		ftp_send(ftp, "211 %lu MB free of %lu MB capacity\r\n", free_clust * fs->csize >> 11, (fs->n_fatent - 2) * fs->csize >> 11);
+		return (ftp_send(ftp, "211 %lu MB free of %lu MB capacity\r\n", free_clust * fs->csize >> 11, (fs->n_fatent - 2) * fs->csize >> 11));
 	} else {
-		ftp_send(ftp, "550 Unknown SITE command %s\r\n", ftp->parameters);
+		return (ftp_send(ftp, "550 Unknown SITE command %s\r\n", ftp->parameters));
 	}
 }
 
-static void ftp_cmd_stat(ftp_data_t *ftp) {
-	// are we not yet logged in?
-	if (!FTP_IS_LOGGED_IN(ftp))
-		return;
-
-	// print status
-	ftp_send(ftp, "221 FTP Server status: you will be disconnected after %d minutes of inactivity\r\n",
-			(FTP_SERVER_INACTIVE_CNT * FTP_SERVER_READ_TIMEOUT_MS) / 60000);
+static ftp_result_t ftp_cmd_stat(ftp_data_t *ftp) {
+	if (!FTP_IS_LOGGED_IN(ftp)) {
+		return (FTP_RES_OK);
+	}
+	return (ftp_send(ftp, "221 FTP Server status: you will be disconnected after %d minutes of inactivity\r\n",
+			(FTP_SERVER_INACTIVE_CNT * FTP_SERVER_READ_TIMEOUT_MS) / 60000));
 }
 
-static void ftp_cmd_auth(ftp_data_t *ftp) {
-	// no tls or ssl available
-	ftp_send(ftp, "504 Not available\r\n");
+static ftp_result_t ftp_cmd_auth(ftp_data_t *ftp) {
+	return (ftp_send(ftp, "504 Not available\r\n"));
 }
 
-static void ftp_cmd_user(ftp_data_t *ftp) {
-	// is this the normal user that is trying to log in?
+static ftp_result_t ftp_cmd_user(ftp_data_t *ftp) {
 	if (FTP_USER_NAME_OK(ftp->parameters)) {
-		// all good
-		ftp_send(ftp, "331 OK. Password required\r\n");
-
-		// waiting for user password
 		ftp->user = FTP_USER_USER_NO_PASS;
-	}
-	// unknown user
-	else {
-		// not a user and not an admin, error
-		ftp_send(ftp, "530 Username not known\r\n");
+		return (ftp_send(ftp, "331 OK. Password required\r\n"));
+	} else {
+		return (ftp_send(ftp, "530 Username not known\r\n"));
 	}
 }
 
-static void ftp_cmd_pass(ftp_data_t *ftp) {
-	// in idle state?
+static ftp_result_t ftp_cmd_pass(ftp_data_t *ftp) {
 	if (ftp->user == FTP_USER_NONE) {
-		// user not specified
-		ftp_send(ftp, "530 User not specified\r\n");
-	}
-	// is this the normal user that is trying to log in?
-	else if (FTP_USER_PASS_OK(ftp->parameters)) {
-		// username and password accepted
-		ftp_send(ftp, "230 OK, logged in as user\r\n");
-
-		// user enabled
+		return (ftp_send(ftp, "530 User not specified\r\n"));
+	} else if (FTP_USER_PASS_OK(ftp->parameters)) {
 		ftp->user = FTP_USER_USER_LOGGED_IN;
-	}
-	// unknown password
-	else {
-		// error, return
-		ftp_send(ftp, "530 Password not correct\r\n");
+		return (ftp_send(ftp, "230 OK, logged in as user\r\n"));
+	} else {
+		return (ftp_send(ftp, "530 Password not correct\r\n"));
 	}
 }
 
@@ -1541,7 +1514,7 @@ static void ftp_stopping(struct netconn *ftp_srv_conn) {
  */
 static void ftp_server(void *argument) {
 	UNUSED(argument);
-	struct netconn *ftp_srv_conn;
+	struct netconn *ftp_srv_conn = NULL;
 
 	while (1) {
 		switch (FTP.status) {
