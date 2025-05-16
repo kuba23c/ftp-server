@@ -45,10 +45,11 @@ typedef struct {
 	uint8_t clients_max;
 	uint32_t clients_connected;
 	uint32_t clients_disconnected;
+	uint32_t clients_denied;
 	uint32_t files_send_successfully;
-	uint32_t files_send_faild;
+	uint32_t files_send_failed;
 	uint32_t files_received_successfully;
-	uint32_t files_received_faild;
+	uint32_t files_received_failed;
 } ftp_stats_t;
 
 void ftp_set_username(const char *name);

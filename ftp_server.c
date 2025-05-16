@@ -20,7 +20,7 @@
 #include "ftp_server.h"
 #include "lwip.h"
 #include "FreeRTOS.h"
-
+#include "semphr.h"
 // stdlib
 #include <string.h>
 #include <ctype.h>
@@ -140,6 +140,7 @@ typedef struct {
 
 typedef struct {
 	TaskHandle_t server_task_handle;
+	SemaphoreHandle_t stats_mutex;
 	ftp_status_t status;
 	ftp_stats_t stats;
 	uint16_t port;
@@ -151,12 +152,24 @@ static char ftp_user_name[FTP_USER_NAME_LEN + 1] = FTP_USER_NAME_DEFAULT;
 static char ftp_user_pass[FTP_USER_PASS_LEN + 1] = FTP_USER_PASS_DEFAULT;
 static ftp_t FTP = { 0 };
 static const char *no_conn_allowed = "421 No more connections allowed\r\n";
-FTP_STRUCT_MEM_SECTION(static server_stru_t ftp_links[FTP_NBR_CLIENTS]) = {0 };
+FTP_STRUCT_MEM_SECTION(static server_stru_t ftp_links[FTP_NBR_CLIENTS]) = {0};
 // =========================================================
 //
 //              Send a response to the client
 //
 // =========================================================
+
+static void ftp_stats_lock(void) {
+	if (xSemaphoreTakeRecursive(FTP.stats_mutex, portMAX_DELAY) != pdTRUE) {
+		FTP_CRITICAL_ERROR_HANDLER();
+	}
+}
+
+static void ftp_stats_unlock(void) {
+	if (xSemaphoreGiveRecursive(FTP.stats_mutex) != pdTRUE) {
+		FTP_CRITICAL_ERROR_HANDLER();
+	}
+}
 
 static void ftp_set_error(ftp_error_t error) {
 	FTP.status = FTP_ERROR_STOPPING;
@@ -939,7 +952,7 @@ static ftp_result_t ftp_cmd_stor(ftp_data_t *ftp) {
 
 				if (rcvbuf_temp->len > FTP_BUF_SIZE) {
 					uint32_t bytes_written = 0;
-					file_err = FTP_F_WRITE(&ftp->file, payload, rcvbuf_temp->len, (UINT*) &bytes_written);
+					file_err = FTP_F_WRITE(&ftp->file, payload, rcvbuf_temp->len, (UINT* ) &bytes_written);
 					if (file_err != FR_OK) {
 						break;
 					}
@@ -955,7 +968,7 @@ static ftp_result_t ftp_cmd_stor(ftp_data_t *ftp) {
 					uint32_t used_bytes = FTP_BUF_SIZE - buff_free_bytes;
 					memcpy(ftp->ftp_buff + used_bytes, payload, buff_free_bytes);
 					uint32_t bytes_written = 0;
-					file_err = FTP_F_WRITE(&ftp->file, ftp->ftp_buff, FTP_BUF_SIZE, (UINT*) &bytes_written);
+					file_err = FTP_F_WRITE(&ftp->file, ftp->ftp_buff, FTP_BUF_SIZE, (UINT* ) &bytes_written);
 					if (file_err != FR_OK) {
 						break;
 					}
@@ -989,7 +1002,7 @@ static ftp_result_t ftp_cmd_stor(ftp_data_t *ftp) {
 			if (buff_free_bytes != FTP_BUF_SIZE) {
 				uint32_t rest_bytes = FTP_BUF_SIZE - buff_free_bytes;
 				uint32_t bytes_written = 0;
-				file_err = FTP_F_WRITE(&ftp->file, ftp->ftp_buff, rest_bytes, (UINT*) &bytes_written);
+				file_err = FTP_F_WRITE(&ftp->file, ftp->ftp_buff, rest_bytes, (UINT* ) &bytes_written);
 				if (rest_bytes != bytes_written) {
 					file_err = FR_INT_ERR;
 				}
@@ -1294,6 +1307,29 @@ static ftp_result_t ftp_process_command(ftp_data_t *ftp, bool *quit) {
 		FTP_CMD_BEGIN_CALLBACK(cmd->cmd);
 		ftp_result_t res = cmd->func(ftp);
 		FTP_CMD_END_CALLBACK(cmd->cmd);
+		if (res == FTP_RES_OK) {
+			if (!strcmp(cmd->cmd, "RETR")) {
+				ftp_stats_lock();
+				FTP.stats.files_send_successfully++;
+				ftp_stats_unlock();
+			}
+			if (!strcmp(cmd->cmd, "STOR")) {
+				ftp_stats_lock();
+				FTP.stats.files_received_successfully++;
+				ftp_stats_unlock();
+			}
+		} else {
+			if (!strcmp(cmd->cmd, "RETR")) {
+				ftp_stats_lock();
+				FTP.stats.files_send_failed++;
+				ftp_stats_unlock();
+			}
+			if (!strcmp(cmd->cmd, "STOR")) {
+				ftp_stats_lock();
+				FTP.stats.files_received_failed++;
+				ftp_stats_unlock();
+			}
+		}
 		return (res);
 	} else {
 		return (ftp_send(ftp, "500 Unknown command\r\n"));
@@ -1374,6 +1410,10 @@ static void ftp_task(void *param) {
 	while (1) {
 		if (ftp->ftp_connection != NULL) {
 			ftp->busy = true;
+			ftp_stats_lock();
+			FTP.stats.clients_connected++;
+			FTP.stats.clients_active++;
+			ftp_stats_unlock();
 			FTP_CONNECTED_CALLBACK();
 			FTP_LOG_PRINT("FTP %d connected\r\n", ftp->number);
 			ftp_service(ftp->ftp_connection, &ftp->ftp_data, &ftp->stop);
@@ -1384,6 +1424,12 @@ static void ftp_task(void *param) {
 			ftp->ftp_connection = NULL;
 			FTP_LOG_PRINT("FTP %d disconnected\r\n", ftp->number);
 			FTP_DISCONNECTED_CALLBACK();
+			ftp_stats_lock();
+			FTP.stats.clients_disconnected++;
+			if (FTP.stats.clients_active) {
+				FTP.stats.clients_active--;
+			}
+			ftp_stats_unlock();
 			ftp->busy = false;
 		} else {
 			vTaskDelay(500);
@@ -1457,6 +1503,7 @@ static void ftp_running(struct netconn *ftp_srv_conn) {
 			}
 		}
 		if (index >= FTP_NBR_CLIENTS) {
+			FTP.stats.clients_denied++;
 			FTP_LOG_PRINT("FTP connection denied, all connections in use\r\n");
 			netconn_set_recvtimeout(ftp_client_conn, FTP_SERVER_READ_TIMEOUT_MS);
 			netconn_set_sendtimeout(ftp_client_conn, FTP_SERVER_WRITE_TIMEOUT_MS);
@@ -1555,6 +1602,9 @@ void ftp_init(void) {
 	if (!FTP.inited) {
 		FTP.inited = true;
 		FTP.stats.clients_max = FTP_NBR_CLIENTS;
+
+		FTP.stats_mutex = xSemaphoreCreateRecursiveMutex();
+		FTP_MUTEX_POST_INIT_HANDLE(FTP.stats_mutex);
 
 		char name[configMAX_TASK_NAME_LEN + 1] = { 0 };
 		for (uint8_t index = 0; index < FTP_NBR_CLIENTS; ++index) {

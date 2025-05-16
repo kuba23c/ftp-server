@@ -38,6 +38,10 @@
 #ifndef FTP_SERVER_TASK_PRIORITY
 #define FTP_SERVER_TASK_PRIORITY 24
 #endif
+
+#ifndef FTP_MUTEX_POST_INIT_HANDLE
+#define FTP_MUTEX_POST_INIT_HANDLE(hMutex) do {} while(0)
+#endif
 /* *********** LWIP ************** */
 /**
  * LWIP configuration example for fast file transfer
