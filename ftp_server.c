@@ -939,36 +939,63 @@ static ftp_result_t ftp_cmd_stor(ftp_data_t *ftp) {
 
 	uint32_t bytes_transfered = 0;
 	uint32_t buff_free_bytes = FTP_BUF_SIZE;
+	struct pbuf *rcvbuf = NULL;
+	err_t con_err = ERR_OK;
+	FRESULT file_err = FR_OK;
+	struct pbuf *rcvbuf_temp = NULL;
+	UINT bytes_written = 0;
+	uint32_t used_bytes = 0;
+	uint32_t rest_bytes_to_save = 0;
+	uint8_t *payload = NULL;
+	uint32_t number_of_buffers = 0;
 	while (1) {
-		struct pbuf *rcvbuf = NULL;
-		int8_t con_err = netconn_recv_tcp_pbuf(ftp->dataconn, &rcvbuf);
+		con_err = netconn_recv_tcp_pbuf(ftp->dataconn, &rcvbuf);
 		if (con_err == ERR_OK) {
-			struct pbuf *rcvbuf_temp = rcvbuf;
-			uint8_t *payload = (uint8_t*) (rcvbuf_temp->payload);
-			FRESULT file_err = FR_OK;
-
-			while (rcvbuf_temp != NULL) {
+			for (rcvbuf_temp = rcvbuf; rcvbuf_temp != NULL; rcvbuf_temp = rcvbuf_temp->next) {
+				payload = (uint8_t*) (rcvbuf_temp->payload);
 				bytes_transfered += rcvbuf_temp->len;
-
 				if (rcvbuf_temp->len > FTP_BUF_SIZE) {
-					uint32_t bytes_written = 0;
-					file_err = FTP_F_WRITE(&ftp->file, payload, rcvbuf_temp->len, (UINT* ) &bytes_written);
-					if (file_err != FR_OK) {
-						break;
+					if (buff_free_bytes != FTP_BUF_SIZE) {
+						rest_bytes_to_save = FTP_BUF_SIZE - buff_free_bytes;
+						file_err = FTP_F_WRITE(&ftp->file, ftp->ftp_buff, rest_bytes_to_save, &bytes_written);
+						if (rest_bytes_to_save != bytes_written) {
+							file_err = FR_INT_ERR;
+						}
+						if (file_err != FR_OK) {
+							break;
+						}
+						buff_free_bytes = FTP_BUF_SIZE;
 					}
-					if (rcvbuf_temp->len != bytes_written) {
-						file_err = FR_INT_ERR;
-						break;
+					number_of_buffers = rcvbuf_temp->len / FTP_BUF_SIZE;
+					for (uint32_t i = 0; i < number_of_buffers; ++i) {
+						memcpy(ftp->ftp_buff, payload + (FTP_BUF_SIZE * i), FTP_BUF_SIZE);
+						file_err = FTP_F_WRITE(&ftp->file, ftp->ftp_buff, FTP_BUF_SIZE, &bytes_written);
+						if (FTP_BUF_SIZE != bytes_written) {
+							file_err = FR_INT_ERR;
+						}
+						if (file_err != FR_OK) {
+							break;
+						}
+					}
+					rest_bytes_to_save = rcvbuf_temp->len % FTP_BUF_SIZE;
+					if (rest_bytes_to_save) {
+						memcpy(ftp->ftp_buff, payload + (FTP_BUF_SIZE * number_of_buffers), rest_bytes_to_save);
+						file_err = FTP_F_WRITE(&ftp->file, ftp->ftp_buff, rest_bytes_to_save, &bytes_written);
+						if (rest_bytes_to_save != bytes_written) {
+							file_err = FR_INT_ERR;
+						}
+						if (file_err != FR_OK) {
+							break;
+						}
 					}
 				} else if (buff_free_bytes > rcvbuf_temp->len) {
-					uint32_t used_bytes = FTP_BUF_SIZE - buff_free_bytes;
+					used_bytes = FTP_BUF_SIZE - buff_free_bytes;
 					memcpy(ftp->ftp_buff + used_bytes, payload, rcvbuf_temp->len);
 					buff_free_bytes -= rcvbuf_temp->len;
 				} else {
-					uint32_t used_bytes = FTP_BUF_SIZE - buff_free_bytes;
+					used_bytes = FTP_BUF_SIZE - buff_free_bytes;
 					memcpy(ftp->ftp_buff + used_bytes, payload, buff_free_bytes);
-					uint32_t bytes_written = 0;
-					file_err = FTP_F_WRITE(&ftp->file, ftp->ftp_buff, FTP_BUF_SIZE, (UINT* ) &bytes_written);
+					file_err = FTP_F_WRITE(&ftp->file, ftp->ftp_buff, FTP_BUF_SIZE, &bytes_written);
 					if (file_err != FR_OK) {
 						break;
 					}
@@ -976,7 +1003,7 @@ static ftp_result_t ftp_cmd_stor(ftp_data_t *ftp) {
 						file_err = FR_INT_ERR;
 						break;
 					}
-					uint32_t rest_bytes_to_save = rcvbuf_temp->len - buff_free_bytes;
+					rest_bytes_to_save = rcvbuf_temp->len - buff_free_bytes;
 					if (rest_bytes_to_save) {
 						memcpy(ftp->ftp_buff, payload + buff_free_bytes, rest_bytes_to_save);
 						buff_free_bytes = FTP_BUF_SIZE - rest_bytes_to_save;
@@ -984,11 +1011,10 @@ static ftp_result_t ftp_cmd_stor(ftp_data_t *ftp) {
 						buff_free_bytes = FTP_BUF_SIZE;
 					}
 				}
-				rcvbuf_temp = rcvbuf_temp->next;
-				payload = (uint8_t*) (rcvbuf_temp->payload);
 			}
 			pbuf_free(rcvbuf);
 			if (file_err != 0) {
+				DEBUG_PRINT(ftp, "file_err: %lu\r\n", file_err);
 				if (ftp_send(ftp, "451 Communication error during transfer\r\n") != FTP_RES_OK) {
 					FTP_F_CLOSE(&ftp->file);
 					path_up_a_level(ftp->path);
@@ -998,16 +1024,18 @@ static ftp_result_t ftp_cmd_stor(ftp_data_t *ftp) {
 				break;
 			}
 		} else {
-			FRESULT file_err = FR_OK;
+			if (rcvbuf != NULL) {
+				pbuf_free(rcvbuf);
+			}
 			if (buff_free_bytes != FTP_BUF_SIZE) {
-				uint32_t rest_bytes = FTP_BUF_SIZE - buff_free_bytes;
-				uint32_t bytes_written = 0;
-				file_err = FTP_F_WRITE(&ftp->file, ftp->ftp_buff, rest_bytes, (UINT* ) &bytes_written);
-				if (rest_bytes != bytes_written) {
+				rest_bytes_to_save = FTP_BUF_SIZE - buff_free_bytes;
+				file_err = FTP_F_WRITE(&ftp->file, ftp->ftp_buff, rest_bytes_to_save, &bytes_written);
+				if (rest_bytes_to_save != bytes_written) {
 					file_err = FR_INT_ERR;
 				}
 			}
 			if (file_err != 0) {
+				DEBUG_PRINT(ftp, "file_err2: %lu\r\n", file_err);
 				if (ftp_send(ftp, "451 Communication error during transfer\r\n") != FTP_RES_OK) {
 					FTP_F_CLOSE(&ftp->file);
 					path_up_a_level(ftp->path);
