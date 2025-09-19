@@ -172,4 +172,13 @@
 #define FTP_ETH_IS_LINK_UP() ((uint8_t)1)
 #endif
 
+#ifndef FTP_UNPACK_PATH_CHECK_CALLBACK
+#define FTP_UNPACK_PATH_CHECK_CALLBACK(path, path_len, is_packed) do {} while(0)
+#endif
+
+#ifndef FTP_UNPACK_CALLBACK
+#define FTP_UNPACK_CALLBACK(src, src_len, dst, dst_len, src_read_bytes, dst_written_bytes) do {} while(0)
+#endif
+
+
 #endif /* FTP_SERVER_FTP_CONFIG_H_ */
