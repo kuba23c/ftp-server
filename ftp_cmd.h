@@ -10,6 +10,13 @@
 
 #include "lwip.h"
 
-err_t ftp_cmd_handle(uint8_t index, struct tcp_pcb *tpcb, struct pbuf *p);
+typedef struct __PACKED {
+	uint8_t index;
+	struct tcp_pcb *tpcb;
+	struct pbuf *p;
+} ftp_cmd_msg_t;
+
+err_t ftp_cmd_handle(const ftp_cmd_msg_t *const msg);
+void ftp_cmd_init(void);
 
 #endif /* FTP_SERVER_FTP_CMD_H_ */

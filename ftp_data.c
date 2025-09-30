@@ -62,6 +62,10 @@ void ftp_data_init(uint8_t index) {
 	assert_param(data_sent_sem != NULL);
 }
 
+void ftp_data_get() {
+
+}
+
 err_t ftp_data_sent(uint8_t index, struct tcp_pcb *tpcb, uint16_t len) {
 	lwrb_skip(&(ftp_data[index].lwrb), len);
 	xSemaphoreGive(data_sent_sem);

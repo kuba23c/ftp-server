@@ -142,7 +142,8 @@ static err_t ftp_client_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
 	}
 
 	client->idle_cnt = 0;
-	err_t res = ftp_cmd_handle(client->index, tpcb, p);
+	ftp_cmd_msg_t msg = { .index = client->index, .tpcb = tpcb, .p = p };
+	err_t res = ftp_cmd_handle(&msg);
 	tcp_recved(tpcb, p->tot_len);
 	pbuf_free(p);
 	return (res);

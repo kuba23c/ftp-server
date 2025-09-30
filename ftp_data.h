@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 #include "lwip.h"
+#include "tcp.h"
 
 void ftp_data_clear(uint8_t index);
 err_t ftp_data_sent(uint8_t index, struct tcp_pcb *tpcb, uint16_t len);

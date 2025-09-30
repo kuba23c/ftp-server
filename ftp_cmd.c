@@ -7,10 +7,17 @@
 
 #include "ftp_cmd.h"
 #include "ftp_config.h"
+#include "stream_buffer.h"
 
 #define DEBUG_PRINT(i, f, ...)	FTP_LOG_PRINT("[%d] "f, i, ##__VA_ARGS__)
 #define FTP_PARAM_SIZE				_MAX_LFN + 8
 #define FTP_CMD_SIZE				5
+#define FTP_CMD_BUFFER_MESSAGE_SIZE		sizeof(ftp_cmd_msg_t)
+#define FTP_CMD_BUFFER_SIZE				(FTP_CMD_BUFFER_MESSAGE_SIZE * 10)
+#define FTP_CMD_TASK_SIZE				1024
+
+static StreamBufferHandle_t ftp_cmd_buffer_handle = NULL;
+static TaskHandle_t ftp_cmd_task_handle = NULL;
 
 typedef enum {
 	FTP_RES_OK,
@@ -71,7 +78,6 @@ static ftp_result_t ftp_parse_command(struct pbuf *p) {
 
 	int ret = ftp_parse_command_check(p);
 
-	netbuf_delete(ftp->inbuf);
 	if (ret < 0) {
 		return (FTP_RES_ERROR);
 	} else {
@@ -79,12 +85,38 @@ static ftp_result_t ftp_parse_command(struct pbuf *p) {
 	}
 }
 
-err_t ftp_cmd_handle(uint8_t index, struct tcp_pcb *tpcb, struct pbuf *p) {
-//	pbuf_ref(p)
-	if (ftp_parse_command() != FTP_RES_OK) {
-		DEBUG_PRINT(index, "Wrong command: %.*s\r\n", p->len, p->payload);
-		return (ERR_OK);
+__NO_RETURN static void ftp_cmd_task(void *pvParameters) {
+	UNUSED(pvParameters);
+	ftp_cmd_msg_t msg = { 0 };
+
+	for (;;) {
+		if (xStreamBufferReceive(ftp_cmd_buffer_handle, &msg, FTP_CMD_BUFFER_MESSAGE_SIZE, portMAX_DELAY) != FTP_CMD_BUFFER_MESSAGE_SIZE) {
+			continue;
+		}
+		if (ftp_parse_command(msg.p) != FTP_RES_OK) {
+			DEBUG_PRINT(msg.index, "Wrong command: %.*s\r\n", msg.p->len, msg.p->payload);
+			pbuf_free(msg.p);
+			continue;
+		}
+		DEBUG_PRINT(msg.index, "Incomming: %s %s\r\n", ftp_cmd.command, ftp_cmd.parameters);
+		// TODO handle command here
+		pbuf_free(msg.p);
 	}
-	DEBUG_PRINT(index, "Incomming: %s %s\r\n", ftp_cmd.command, ftp_cmd.parameters);
+}
+
+err_t ftp_cmd_handle(const ftp_cmd_msg_t *const msg) {
+	pbuf_ref(msg->p);
+	if (xStreamBufferSend(ftp_cmd_buffer_handle, msg, FTP_CMD_BUFFER_MESSAGE_SIZE, 0) == FTP_CMD_BUFFER_MESSAGE_SIZE) {
+		DEBUG_PRINT(index, "ftp cmd buff send OK\r\n");
+	} else {
+		DEBUG_PRINT(index, "ftp cmd buff send ERROR\r\n");
+	}
+	return (ERR_OK);
+}
+
+void ftp_cmd_init(void) {
+	ftp_cmd_buffer_handle = xStreamBufferCreate(FTP_CMD_BUFFER_SIZE, FTP_CMD_BUFFER_MESSAGE_SIZE);
+	assert_param(ftp_cmd_buffer_handle != NULL);
+	assert_param(xTaskCreate(ftp_cmd_task, "FTP CMD", FTP_CMD_TASK_SIZE, NULL, osPriorityNormal, &ftp_cmd_task_handle) == pdPASS);
 }
 

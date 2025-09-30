@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 #include "lwip.h"
+#include "tcp.h"
 
 typedef struct {
 	uint8_t clients_connected;
