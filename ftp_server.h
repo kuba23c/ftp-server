@@ -59,9 +59,6 @@ uint16_t ftp_get_port(void);
 ftp_status_t ftp_get_status(void);
 uint32_t ftp_get_errors(void);
 
-void ftp_init(void);
-void ftp_start(void);
-void ftp_stop(void);
 void ftp_clear_errors(void);
 const ftp_stats_t* ftp_get_stats(void);
 

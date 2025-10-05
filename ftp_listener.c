@@ -9,6 +9,8 @@
 #include "lwip.h"
 #include "ftp_config.h"
 #include "ftp_client.h"
+#include "ftp_pasv.h"
+#include "ftp_data_connection.h"
 
 typedef struct {
 	struct tcp_pcb *listener_pcb;
@@ -96,6 +98,8 @@ static void ftp_listener_stop(void *ctx) {
 		}
 	}
 	ftp_clients_stop();
+	ftp_pasv_listeners_stop();
+	ftp_data_conns_stop();
 }
 
 /**
@@ -103,6 +107,7 @@ static void ftp_listener_stop(void *ctx) {
  * call only once
  */
 void ftp_init(void) {
+	ftp_pasv_init();
 	ftp_client_init();
 	if (!ftp_listener.inited) {
 		ftp_listener.inited = true;

@@ -33,6 +33,26 @@ static void ftp_client_clean(ftp_client_t *client) {
 	memset(client, 0, sizeof(ftp_client_t));
 }
 
+static void ftp_client_after_close(ftp_client_t *client) {
+	FTP_DISCONNECTED_CALLBACK();
+	FTP_LOG_PRINT("FTP client %d disconnected\r\n", client->index);
+	if (ftp_clients.stats.clients_connected) {
+		ftp_clients.stats.clients_connected--;
+		ftp_clients.stats.clients_closed++;
+	}
+	ftp_client_clean(client);
+}
+
+static err_t ftp_client_close(ftp_client_t *client) {
+	if (tcp_close(client->client_pcb) == ERR_OK) {
+		ftp_data_conn_after_close(client);
+		return (ERR_OK);
+	} else {
+		tcp_abort(client->client_pcb);
+		return (ERR_ABRT);
+	}
+}
+
 /** Function prototype for tcp error callback functions. Called when the pcb
  * receives a RST or is unexpectedly closed for any other reason.
  *
@@ -100,7 +120,9 @@ static err_t ftp_client_poll(void *arg, struct tcp_pcb *tpcb) {
  */
 static err_t ftp_client_sent(void *arg, struct tcp_pcb *tpcb, u16_t len) {
 	ftp_client_t *client = (ftp_client_t*) arg;
-	err_t res = ftp_data_sent(client->index, tpcb, len);
+	client->idle_cnt = 0;
+	ftp_cmd_msg_client_t msg_client = { .index = client->index, .tpcb = tpcb };
+	err_t res = ftp_data_sent(&msg_client, len);
 	return (res);
 }
 
@@ -142,7 +164,7 @@ static err_t ftp_client_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
 	}
 
 	client->idle_cnt = 0;
-	ftp_cmd_msg_t msg = { .index = client->index, .tpcb = tpcb, .p = p };
+	ftp_cmd_msg_t msg = { .client = { .index = client->index, .tpcb = tpcb }, .p = p };
 	err_t res = ftp_cmd_handle(&msg);
 	tcp_recved(tpcb, p->tot_len);
 	pbuf_free(p);
