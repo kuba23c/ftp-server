@@ -24,12 +24,6 @@
 #define FTP_USER_PASS_OK(pass)		(!strcmp(pass, ftp_user_pass))
 #define FTP_IS_LOGGED_IN(p_ftp)		(p_ftp->user == FTP_USER_USER_LOGGED_IN)
 
-typedef enum {
-	FTP_USER_NONE,
-	FTP_USER_USER_NO_PASS,
-	FTP_USER_USER_LOGGED_IN
-} ftp_user_t;
-
 typedef struct {
 	uint8_t index;
 	struct tcp_pcb *client_pcb;
@@ -59,7 +53,23 @@ static char ftp_user_pass[FTP_USER_PASS_LEN + 1] = FTP_USER_PASS_DEFAULT;
 static ftp_clients_t ftp_clients = { 0 };
 
 bool ftp_is_logged_in(uint8_t index) {
-	return (ftp_clients.client[index].user == FTP_USER_USER_LOGGED_IN);
+	return (ftp_clients.client[index].user == FTP_USER_USER_NO_PASS);
+}
+
+ftp_user_t ftp_get_user(uint8_t index) {
+	return (ftp_clients.client[index].user);
+}
+
+void ftp_set_user(uint8_t index, ftp_user_t user) {
+	ftp_clients.client[index].user = user;
+}
+
+bool ftp_is_user_name_ok(char *name) {
+	return (!strcmp(name, ftp_user_name));
+}
+
+bool ftp_is_pass_ok(char *pass) {
+	return (!strcmp(pass, ftp_user_pass));
 }
 
 char* ftp_get_path(uint8_t index) {

@@ -17,6 +17,12 @@ typedef enum {
 	DCM_ACTIVE
 } dcm_type;
 
+typedef enum {
+	FTP_USER_NONE,
+	FTP_USER_USER_NO_PASS,
+	FTP_USER_USER_LOGGED_IN
+} ftp_user_t;
+
 typedef struct {
 	uint8_t clients_connected;
 	uint8_t clients_max;
@@ -29,6 +35,10 @@ typedef struct {
 
 ftp_result_t ftp_cmd_resp_send(uint8_t index, const char *fmt, ...);
 bool ftp_is_logged_in(uint8_t index);
+ftp_user_t ftp_get_user(uint8_t index);
+void ftp_set_user(uint8_t index, ftp_user_t user);
+bool ftp_is_user_name_ok(char *name);
+bool ftp_is_pass_ok(char *pass);
 char* ftp_get_path(uint8_t index);
 void ftp_set_data_conn_mode(uint8_t index, dcm_type mode);
 dcm_type ftp_get_data_conn_mode(uint8_t index);
