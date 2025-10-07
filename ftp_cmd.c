@@ -26,13 +26,16 @@ static TaskHandle_t ftp_cmd_task_handle = NULL;
 typedef struct {
 	char *path;
 	FILINFO finfo;
+	ftp_data_msg_t msg;
 } ftp_cmd_temp_t;
 
 typedef struct {
 	uint8_t index;
+	char *command;
 	char *parameters;
 	uint16_t parameters_len;
 	ftp_cmd_temp_t temp;
+	struct pbuf *p;
 } ftp_cmd_handler_data_t;
 
 typedef struct {
@@ -45,6 +48,7 @@ typedef struct {
 	uint16_t command_len;
 	char *parameters;
 	uint16_t parameters_len;
+	struct pbuf *p;
 } ftp_cmd_t;
 
 static void set_path_to_root(char *path) {
@@ -280,7 +284,40 @@ static ftp_result_t ftp_cmd_list(ftp_cmd_handler_data_t *const data) {
 	if (ftp_cmd_resp_send(data->index, "150 Accepted data connection\r\n") != FTP_RES_OK) {
 		return (FTP_RES_ERROR);
 	}
+	pbuf_ref(data->p);
+	data->temp.msg.msg_type = FTP_DATA_MSG_LIST;
+	data->temp.msg.index = data->index;
+	data->temp.msg.data.list.p = data->p;
+	data->temp.msg.data.list.command = data->command;
+	data->temp.msg.data.list.parameters = data->parameters;
+	ftp_data_handle(&(data->temp.msg));
 	return (FTP_RES_OK);
+}
+
+static ftp_result_t ftp_cmd_dele(ftp_cmd_handler_data_t *const data) {
+	if (!ftp_is_logged_in(data->index)) {
+		return (FTP_RES_OK);
+	}
+
+	if (data->parameters_len == 0) {
+		return (ftp_cmd_resp_send(data->index, "501 No file name\r\n"));
+	}
+	data->temp.path = ftp_get_path(data->index);
+	if (!path_build(data->temp.path, data->parameters, data->parameters_len)) {
+		return (ftp_cmd_resp_send(data->index, "500 Command line too long\r\n"));
+	}
+	if (FTP_F_STAT(data->temp.path, &(data->temp.finfo)) != FR_OK) {
+		path_up_a_level(data->temp.path);
+		return (ftp_cmd_resp_send(data->index, "550 file %s not found\r\n", data->parameters));
+	}
+
+	if (FTP_F_UNLINK(data->temp.path) != FR_OK) {
+		path_up_a_level(data->temp.path);
+		return (ftp_cmd_resp_send(data->index, "450 Can't delete %s\r\n", data->parameters));
+	}
+
+	path_up_a_level(data->temp.path);
+	return (ftp_cmd_resp_send(data->index, "250 Deleted %s\r\n", data->parameters));
 }
 
 static ftp_cmd_handlers_t ftpd_commands[] = { //
@@ -297,7 +334,7 @@ static ftp_cmd_handlers_t ftpd_commands[] = { //
 		{ "NLST", ftp_cmd_list }, //
 		{ "LIST", ftp_cmd_list }, //
 //		{ "MLSD", ftp_cmd_mlsd }, //
-//		{ "DELE", ftp_cmd_dele }, //
+		{ "DELE", ftp_cmd_dele }, //
 //		{ "RETR", ftp_cmd_retr }, //
 //		{ "STOR", ftp_cmd_stor }, //
 //		{ "MKD", ftp_cmd_mkd }, //
@@ -323,7 +360,8 @@ static ftp_result_t ftp_process_command(uint8_t index, const ftp_cmd_t *const ft
 		cmd_len = strlen(handler->cmd);
 		if (cmd_len == ftp_cmd->command_len) {
 			if (!strncmp(handler->cmd, ftp_cmd->command, cmd_len)) {
-				ftp_cmd_handler_data_t data = { .index = index, .parameters = ftp_cmd->parameters, .parameters_len = ftp_cmd->parameters_len };
+				ftp_cmd_handler_data_t data = { .index = index, .command = ftp_cmd->command, .parameters = ftp_cmd->parameters, .parameters_len =
+						ftp_cmd->parameters_len, .p = ftp_cmd->p };
 				return (handler->func(&data));
 			}
 		}
@@ -388,6 +426,7 @@ __NO_RETURN static void ftp_cmd_task(void *pvParameters) {
 		}
 		if (ftp_parse_command(msg.p, &ftp_cmd) == FTP_RES_OK) {
 			DEBUG_PRINT(msg.index, "Incomming: %.*s %.*s\r\n", ftp_cmd.command_len, ftp_cmd.command, ftp_cmd.parameters_len, ftp_cmd.parameters);
+			ftp_cmd.p = msg.p;
 			if (ftp_process_command(msg.index, &ftp_cmd) != FTP_RES_OK) {
 				DEBUG_PRINT(msg.index, "CMD process: FAILED\r\n");
 			} else {
