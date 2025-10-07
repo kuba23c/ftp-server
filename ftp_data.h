@@ -14,28 +14,33 @@
 
 #define FTP_CWD_SIZE				_MAX_LFN + 8
 
+typedef struct {
+	uint32_t temp;
+// TODO
+} ftp_data_stats_t;
+
 typedef enum {
-	DCM_NOT_SET,
-	DCM_PASSIVE,
-	DCM_ACTIVE
-} dcm_type;
+	FTP_DATA_MSG_RECV,
+	FTP_DATA_MSG_SENT,
+	FTP_DATA_MSG_START_RX,
+	FTP_DATA_MSG_START_TX,
+	FTP_DATA_MSG_STOP,
+} ftp_data_msg_type_t;
+
+typedef union __PACKED {
+	struct pbuf *recv_p;
+	uint16_t sent_len;
+	char *start_rx_path;
+	char *start_tx_path;
+	void *stop;
+} ftp_data_msg_data_t;
 
 typedef struct __PACKED {
+	ftp_data_msg_type_t msg_type;
 	uint8_t index;
-	struct tcp_pcb *tpcb;
-} ftp_data_msg_client_t;
-
-typedef struct __PACKED {
-	ftp_data_msg_client_t client;
-	struct pbuf *p;
+	ftp_data_msg_data_t data;
 } ftp_data_msg_t;
 
-ftp_result_t ftp_send(const ftp_cmd_msg_client_t *const client, const char *fmt, ...);
-err_t ftp_data_sent(const ftp_cmd_msg_client_t *const client, uint16_t len);
-bool ftp_is_logged_in(const ftp_cmd_msg_client_t *const client);
-char* ftp_get_path(const ftp_cmd_msg_client_t *const client);
-void ftp_set_connection_mode(const ftp_cmd_msg_client_t *const client, dcm_type data_conn_mode);
-dcm_type ftp_get_connection_mode(const ftp_cmd_msg_client_t *const client);
 err_t ftp_data_handle(const ftp_data_msg_t *const msg);
 void ftp_data_init(void);
 

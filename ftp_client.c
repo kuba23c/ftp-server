@@ -7,18 +7,43 @@
 
 #include "ftp_client.h"
 #include "ftp_config.h"
-#include "ftp_cmd.h"
 #include "ftp_data.h"
+#include "FreeRTOS.h"
+#include "semphr.h"
+#include <stdarg.h>
 
-#define FTP_TCP_KEEP_IDLE 	3000
-#define FTP_TCP_KEEP_INTVL 	1000
-#define FTP_TCP_KEEP_CNT 	3
+#define FTP_TCP_KEEP_IDLE 		3000
+#define FTP_TCP_KEEP_INTVL 		1000
+#define FTP_TCP_KEEP_CNT 		3
 #define FTP_TCP_MAX_IDLE_SEC	10
+#define FTP_TCP_SENT_MAX_IDLE_SEC	3
+#define FTP_VERSION				"2020-08-20"
+#define FTP_CMD_BUFF_SIZE		(_MAX_LFN * 2)
+
+#define FTP_USER_NAME_OK(name)		(!strcmp(name, ftp_user_name))
+#define FTP_USER_PASS_OK(pass)		(!strcmp(pass, ftp_user_pass))
+#define FTP_IS_LOGGED_IN(p_ftp)		(p_ftp->user == FTP_USER_USER_LOGGED_IN)
+
+typedef enum {
+	FTP_USER_NONE,
+	FTP_USER_USER_NO_PASS,
+	FTP_USER_USER_LOGGED_IN
+} ftp_user_t;
 
 typedef struct {
 	uint8_t index;
 	struct tcp_pcb *client_pcb;
 	uint8_t idle_cnt;
+
+	char buff[FTP_CMD_BUFF_SIZE];
+	struct tcpip_callback_msg *cb;
+	uint32_t len;
+	uint8_t sent_idle_cnt;
+	SemaphoreHandle_t buff_available_sem;
+	SemaphoreHandle_t mutex;
+
+	char path[FTP_CWD_SIZE];
+	ftp_user_t user;
 } ftp_client_t;
 
 typedef struct {
@@ -27,10 +52,70 @@ typedef struct {
 	bool inited;
 } ftp_clients_t;
 
+static const char *ftp_cmd_resp_421 = "421 No more connections allowed\r\n";
+static char ftp_user_name[FTP_USER_NAME_LEN + 1] = FTP_USER_NAME_DEFAULT;
+static char ftp_user_pass[FTP_USER_PASS_LEN + 1] = FTP_USER_PASS_DEFAULT;
 static ftp_clients_t ftp_clients = { 0 };
 
+bool ftp_is_logged_in(uint8_t index) {
+	return (ftp_clients.client[index].user == FTP_USER_USER_LOGGED_IN);
+}
+
+char* ftp_get_path(uint8_t index) {
+	return (ftp_clients.client[index].path);
+}
+
+static void ftp_cmd_resp_send_cb(void *ctx) {
+	ftp_client_t *client = (ftp_client_t*) ctx;
+	if (client->client_pcb != NULL && client->len != 0) {
+		tcp_write(client->client_pcb, client->buff, client->len, 0);
+	}
+}
+
+ftp_result_t ftp_cmd_resp_send(uint8_t index, const char *fmt, ...) {
+	ftp_client_t *client = &(ftp_clients.client[index]);
+	if (xSemaphoreTake(client->buff_available_sem, 2000) == pdTRUE) {
+		if (xSemaphoreTake(client->mutex, 2000) == pdTRUE) {
+			va_list args;
+			va_start(args, fmt);
+			int full_len = vsnprintf(client->buff, FTP_CMD_BUFF_SIZE, fmt, args);
+			va_end(args);
+
+			ftp_result_t res = FTP_RES_OK;
+			if (full_len <= 0) {
+				DEBUG_PRINT(client->index, "Error on parsing CMD response\r\n");
+				res = FTP_RES_ERROR;
+			} else if (full_len >= FTP_CMD_BUFF_SIZE) {
+				DEBUG_PRINT(client->index, "CMD response NOT written fully\r\n");
+				res = FTP_RES_ERROR;
+			} else {
+				client->len = full_len;
+				err_t err = tcpip_callbackmsg_trycallback(client->cb);
+				if (err == ERR_OK) {
+					DEBUG_PRINT(client->index, "CMD response waits to send...\r\n");
+					res = FTP_RES_OK;
+				} else {
+					DEBUG_PRINT(client->index, "Error on sending CMD response: %d\r\n", err);
+					res = FTP_RES_ERROR;
+				}
+			}
+			xSemaphoreGive(client->mutex);
+			return (res);
+		} else {
+			DEBUG_PRINT(client->index, "Timeout on CMD response mutex take\r\n");
+			return (FTP_RES_TIMEOUT);
+		}
+	} else {
+		DEBUG_PRINT(client->index, "Timeout on CMD response send\r\n");
+		return (FTP_RES_TIMEOUT);
+	}
+}
+
 static void ftp_client_clean(ftp_client_t *client) {
-	memset(client, 0, sizeof(ftp_client_t));
+	client->idle_cnt = 0;
+	client->client_pcb = NULL;
+	client->len = 0;
+	xSemaphoreGive(client->buff_available_sem);
 }
 
 static void ftp_client_after_close(ftp_client_t *client) {
@@ -44,11 +129,20 @@ static void ftp_client_after_close(ftp_client_t *client) {
 }
 
 static err_t ftp_client_close(ftp_client_t *client) {
-	if (tcp_close(client->client_pcb) == ERR_OK) {
-		ftp_data_conn_after_close(client);
-		return (ERR_OK);
+	if (xSemaphoreTake(client->mutex, 1000) == pdTRUE) {
+		if (tcp_close(client->client_pcb) == ERR_OK) {
+			ftp_client_after_close(client);
+			xSemaphoreGive(client->mutex);
+			return (ERR_OK);
+		} else {
+			tcp_abort(client->client_pcb);
+			xSemaphoreGive(client->mutex);
+			return (ERR_ABRT);
+		}
 	} else {
+		DEBUG_PRINT(client->index, "Timeout on CMD response mutex take, on clear\r\n");
 		tcp_abort(client->client_pcb);
+		xSemaphoreGive(client->mutex);
 		return (ERR_ABRT);
 	}
 }
@@ -66,14 +160,8 @@ static err_t ftp_client_close(ftp_client_t *client) {
 static void ftp_client_err(void *arg, err_t err) {
 	UNUSED(err);
 	ftp_client_t *client = (ftp_client_t*) arg;
-	ftp_client_clean(client);
-	FTP_DISCONNECTED_CALLBACK();
-	FTP_LOG_PRINT("FTP %d disconnected\r\n", client->index);
 	ftp_clients.stats.clients_errors++;
-	if (ftp_clients.stats.clients_connected) {
-		ftp_clients.stats.clients_connected--;
-		ftp_clients.stats.clients_closed++;
-	}
+	ftp_client_after_close(client);
 }
 
 /** Function prototype for tcp poll callback functions. Called periodically as
@@ -91,18 +179,17 @@ static err_t ftp_client_poll(void *arg, struct tcp_pcb *tpcb) {
 	client->idle_cnt++;
 	if (client->idle_cnt >= FTP_TCP_MAX_IDLE_SEC) {
 		ftp_clients.stats.clients_timeouts++;
-		ftp_client_clean(client);
-		if (tcp_close(tpcb) != ERR_OK) {
-			tcp_abort(tpcb);
-			return (ERR_ABRT);
-		} else {
-			FTP_DISCONNECTED_CALLBACK();
-			FTP_LOG_PRINT("FTP %d disconnected\r\n", client->index);
-			if (ftp_clients.stats.clients_connected) {
-				ftp_clients.stats.clients_connected--;
-				ftp_clients.stats.clients_closed++;
-			}
+		return (ftp_client_close(client));
+	}
+
+	if (client->len) {
+		client->sent_idle_cnt++;
+		if (client->sent_idle_cnt >= FTP_TCP_SENT_MAX_IDLE_SEC) {
+			ftp_clients.stats.clients_timeouts++;
+			return (ftp_client_close(client));
 		}
+	} else {
+		client->sent_idle_cnt = 0;
 	}
 	return (ERR_OK);
 }
@@ -121,9 +208,18 @@ static err_t ftp_client_poll(void *arg, struct tcp_pcb *tpcb) {
 static err_t ftp_client_sent(void *arg, struct tcp_pcb *tpcb, u16_t len) {
 	ftp_client_t *client = (ftp_client_t*) arg;
 	client->idle_cnt = 0;
-	ftp_cmd_msg_client_t msg_client = { .index = client->index, .tpcb = tpcb };
-	err_t res = ftp_data_sent(&msg_client, len);
-	return (res);
+	client->sent_idle_cnt = 0;
+
+	if (client->len <= len) {
+		client->len = 0;
+	} else {
+		client->len -= len;
+	}
+	if (client->len == 0) {
+		xSemaphoreGive(client->buff_available_sem);
+	}
+
+	return (ERR_OK);
 }
 
 /** Function prototype for tcp receive callback functions. Called when data has
@@ -148,23 +244,11 @@ static err_t ftp_client_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
 		return (ERR_ABRT);
 	}
 	if (p == NULL) {
-		ftp_client_clean(client);
-		if (tcp_close(tpcb) != ERR_OK) {
-			tcp_abort(tpcb);
-			return (ERR_ABRT);
-		} else {
-			FTP_DISCONNECTED_CALLBACK();
-			FTP_LOG_PRINT("FTP %d disconnected\r\n", client->index);
-			if (ftp_clients.stats.clients_connected) {
-				ftp_clients.stats.clients_connected--;
-				ftp_clients.stats.clients_closed++;
-			}
-		}
-		return (ERR_OK);
+		return (ftp_client_close(client));
 	}
 
 	client->idle_cnt = 0;
-	ftp_cmd_msg_t msg = { .client = { .index = client->index, .tpcb = tpcb }, .p = p };
+	ftp_cmd_msg_t msg = { .index = client->index, .p = p };
 	err_t res = ftp_cmd_handle(&msg);
 	tcp_recved(tpcb, p->tot_len);
 	pbuf_free(p);
@@ -172,7 +256,6 @@ static err_t ftp_client_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
 }
 
 err_t ftp_client_start(struct tcp_pcb *newpcb) {
-	err_t result = ERR_ABRT;
 	for (uint8_t i = 0; i < FTP_NBR_CLIENTS; ++i) {
 		if (ftp_clients.client[i].client_pcb == NULL) {
 			FTP_CONNECTED_CALLBACK();
@@ -185,39 +268,39 @@ err_t ftp_client_start(struct tcp_pcb *newpcb) {
 			ftp_clients.client[i].index = i;
 			ftp_clients.client[i].client_pcb = newpcb;
 			ftp_clients.client[i].idle_cnt = 0;
+			strncpy(ftp_clients.client[i].path, "/", FTP_CWD_SIZE);
+			ftp_clients.client[i].user = FTP_USER_NONE;
 
 			tcp_arg(ftp_clients.client[i].client_pcb, &ftp_clients.client[i]);
 			tcp_err(ftp_clients.client[i].client_pcb, ftp_client_err);
 			tcp_poll(ftp_clients.client[i].client_pcb, ftp_client_poll, 2);
 			tcp_sent(ftp_clients.client[i].client_pcb, ftp_client_sent);
 			tcp_recv(ftp_clients.client[i].client_pcb, ftp_client_recv);
-			result = ERR_OK;
-			break;
+
+			ftp_clients.stats.clients_accepted++;
+			ftp_clients.stats.clients_connected++;
+			ftp_cmd_resp_send(i, "220 -> CMS FTP Server, FTP Version %s\r\n", FTP_VERSION);
+			return (ERR_OK);
 		}
 	}
-	if (result == ERR_ABRT) {
-		tcp_abort(newpcb);
-		ftp_clients.stats.clients_rejected++;
-	} else {
-		ftp_clients.stats.clients_accepted++;
-		ftp_clients.stats.clients_connected++;
+
+	ftp_clients.stats.clients_rejected++;
+	tcp_write(newpcb, ftp_cmd_resp_421, strlen(ftp_cmd_resp_421), TCP_WRITE_FLAG_COPY);
+	tcp_output(newpcb);
+	tcp_abort(newpcb);
+	return (ERR_ABRT);
+}
+
+void ftp_client_stop(uint8_t index) {
+	if (ftp_clients.client[index].client_pcb) {
+		ftp_client_close(&(ftp_clients.client[index]));
 	}
-	return (result);
 }
 
 void ftp_clients_stop(void) {
 	for (uint8_t i = 0; i < FTP_NBR_CLIENTS; ++i) {
 		if (ftp_clients.client[i].client_pcb) {
-			FTP_DISCONNECTED_CALLBACK();
-			FTP_LOG_PRINT("FTP %d disconnected\r\n", i);
-			if (tcp_close(ftp_clients.client[i].client_pcb) == ERR_OK) {
-				if (ftp_clients.stats.clients_connected) {
-					ftp_clients.stats.clients_connected--;
-				}
-				ftp_clients.stats.clients_closed++;
-			} else {
-				tcp_abort(ftp_clients.client[i].client_pcb);
-			}
+			ftp_client_close(&(ftp_clients.client[i]));
 		}
 	}
 }
@@ -226,6 +309,19 @@ void ftp_clients_init(void) {
 	if (!ftp_clients.inited) {
 		ftp_clients.inited = true;
 		ftp_clients.stats.clients_max = FTP_NBR_CLIENTS;
+		for (uint8_t i = 0; i < FTP_NBR_CLIENTS; ++i) {
+			ftp_clients.client[i].index = i;
+			ftp_clients.client[i].idle_cnt = 0;
+			ftp_clients.client[i].len = 0;
+			ftp_clients.client[i].buff_available_sem = xSemaphoreCreateBinary();
+			assert_param(ftp_clients.client[i].buff_available_sem != NULL);
+			xSemaphoreGive(ftp_clients.client[i].buff_available_sem);
+			ftp_clients.client[i].mutex = xSemaphoreCreateMutex();
+			assert_param(ftp_clients.client[i].mutex != NULL);
+			xSemaphoreGive(ftp_clients.client[i].mutex);
+			ftp_clients.client[i].cb = tcpip_callbackmsg_new(ftp_cmd_resp_send_cb, &(ftp_clients.client[i]));
+			assert_param(ftp_clients.client[i].cb != NULL);
+		}
 	}
 }
 

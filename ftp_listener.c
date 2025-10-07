@@ -22,6 +22,30 @@ typedef struct {
 
 static ftp_listener_t ftp_listener = { 0 };
 
+static void ftp_listener_clean(void) {
+	ftp_listener.listener_pcb = NULL;
+}
+
+static void ftp_listener_after_close(void) {
+	FTP_DISCONNECTED_CALLBACK();
+	FTP_LOG_PRINT("FTP main listener disconnected\r\n");
+	if (ftp_listener.stats.listeners_active) {
+		ftp_listener.stats.listeners_active--;
+		ftp_listener.stats.listeners_closed++;
+	}
+	ftp_listener_clean();
+}
+
+static err_t ftp_listener_close(void) {
+	if (tcp_close(ftp_listener.listener_pcb) == ERR_OK) {
+		ftp_listener_after_close();
+		return (ERR_OK);
+	} else {
+		tcp_abort(ftp_listener.listener_pcb);
+		return (ERR_ABRT);
+	}
+}
+
 /** Function prototype for tcp error callback functions. Called when the pcb
  * receives a RST or is unexpectedly closed for any other reason.
  *
@@ -34,12 +58,9 @@ static ftp_listener_t ftp_listener = { 0 };
  */
 static void ftp_listener_err(void *arg, err_t err) {
 	UNUSED(err);
-	struct tcp_pcb **ptcp_pcb = (struct tcp_pcb**) arg;
-	*ptcp_pcb = NULL;
+	UNUSED(arg);
 	ftp_listener.stats.listeners_errors++;
-	if (ftp_listener.stats.listeners_active) {
-		ftp_listener.stats.listeners_active--;
-	}
+	ftp_listener_after_close();
 }
 
 /** Function prototype for tcp accept callback functions. Called when a new
@@ -88,14 +109,7 @@ static void ftp_listener_start(void *ctx) {
 static void ftp_listener_stop(void *ctx) {
 	UNUSED(ctx);
 	if (ftp_listener.listener_pcb) {
-		if (tcp_close(ftp_listener.listener_pcb) == ERR_OK) {
-			if (ftp_listener.stats.listeners_active) {
-				ftp_listener.stats.listeners_active--;
-			}
-			ftp_listener.stats.listeners_closed++;
-		} else {
-			tcp_abort(ftp_listener.listener_pcb);
-		}
+		ftp_listener_close();
 	}
 	ftp_clients_stop();
 	ftp_pasv_listeners_stop();

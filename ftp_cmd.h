@@ -21,11 +21,6 @@ typedef enum {
 
 typedef struct __PACKED {
 	uint8_t index;
-	struct tcp_pcb *tpcb;
-} ftp_cmd_msg_client_t;
-
-typedef struct __PACKED {
-	ftp_cmd_msg_client_t client;
 	struct pbuf *p;
 } ftp_cmd_msg_t;
 
