@@ -23,7 +23,6 @@ typedef struct {
 	uint8_t index;
 	struct tcp_pcb *client_pcb;
 	uint8_t idle_cnt;
-	dcm_type data_conn_mode;
 
 	ALIGN_32BYTES(char ftp_buff[FTP_BUF_SIZE + 1]);
 	lwrb_t lwrb;
@@ -78,7 +77,6 @@ lwrb_t* ftp_data_get_lwrb(uint8_t index) {
 static void ftp_data_conn_clean(ftp_data_conn_t *data_conn) {
 	data_conn->client_pcb = NULL;
 	data_conn->idle_cnt = 0;
-	data_conn->data_conn_mode = DCM_NOT_SET;
 	lwrb_reset(&(data_conn->lwrb));
 	xSemaphoreGive(data_conn->mutex);
 }
@@ -216,7 +214,7 @@ static err_t ftp_data_conn_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p,
 	return (res);
 }
 
-err_t ftp_data_conn_start(uint8_t index, struct tcp_pcb *newpcb, dcm_type mode) {
+err_t ftp_data_conn_start(uint8_t index, struct tcp_pcb *newpcb) {
 	err_t result = ERR_ABRT;
 
 	if (ftp_data_conns.client[index].client_pcb == NULL) {
@@ -230,7 +228,6 @@ err_t ftp_data_conn_start(uint8_t index, struct tcp_pcb *newpcb, dcm_type mode) 
 		ftp_data_conns.client[index].index = index;
 		ftp_data_conns.client[index].client_pcb = newpcb;
 		ftp_data_conns.client[index].idle_cnt = 0;
-		ftp_data_conns.client[index].data_conn_mode = mode;
 
 		tcp_arg(ftp_data_conns.client[index].client_pcb, &ftp_data_conns.client[index]);
 		tcp_err(ftp_data_conns.client[index].client_pcb, ftp_data_conn_err);
@@ -242,9 +239,11 @@ err_t ftp_data_conn_start(uint8_t index, struct tcp_pcb *newpcb, dcm_type mode) 
 	if (result == ERR_ABRT) {
 		tcp_abort(newpcb);
 		ftp_data_conns.stats.clients_rejected++;
+		ftp_cmd_resp_send(index, "425 Can't create connection\r\n");
 	} else {
 		ftp_data_conns.stats.clients_accepted++;
 		ftp_data_conns.stats.clients_connected++;
+		ftp_cmd_resp_send(index, "150 Accepted data connection\r\n");
 	}
 	return (result);
 }

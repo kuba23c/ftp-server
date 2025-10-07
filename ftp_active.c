@@ -71,7 +71,7 @@ static err_t ftp_active_close(ftp_active_data_t *data) {
 static err_t ftp_active_connected(void *arg, struct tcp_pcb *tpcb, err_t err) {
 	UNUSED(err);
 	ftp_active_data_t *data = (ftp_active_data_t*) arg;
-	err_t err2 = ftp_data_conn_start(data->index, tpcb, DCM_ACTIVE);
+	err_t err2 = ftp_data_conn_start(data->index, tpcb);
 	if (err2 == ERR_OK) {
 		DEBUG_PRINT(data->index, "Active data conn OK on connect: %d\r\n", err2);
 	} else {
@@ -115,6 +115,7 @@ static err_t ftp_active_poll(void *arg, struct tcp_pcb *tpcb) {
 	data->idle_cnt++;
 	if (data->idle_cnt >= FTP_TCP_MAX_IDLE_SEC) {
 		ftp_active.stats.active_timeouts++;
+		ftp_cmd_resp_send(data->index, "425 Can't create connection\r\n");
 		return (ftp_active_close(data));
 	}
 	return (ERR_OK);
@@ -149,11 +150,16 @@ static void ftp_active_connect_cb(void *ctx) {
 	}
 }
 
-err_t ftp_active_connect(uint8_t index, uint8_t a, uint8_t b, uint8_t c, uint8_t d, uint16_t port) {
+void ftp_active_set_ip(uint8_t index, uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
+	IP4_ADDR(&(ftp_active.active[index].ipaddr), a, b, c, d);
+}
+
+void ftp_active_set_port(uint8_t index, uint16_t port) {
+	ftp_active.active[index].port = port;
+}
+
+err_t ftp_active_connect(uint8_t index) {
 	if (ftp_active.active[index].pcb == NULL) {
-		IP4_ADDR(&(ftp_active.active[index].ipaddr), a, b, c, d);
-		ftp_active.active[index].port = port;
-		ftp_active.active[index].pcb = NULL;
 		err_t err = tcpip_callbackmsg_trycallback(ftp_active.active[index].connect_cb);
 		if (err == ERR_OK) {
 			DEBUG_PRINT(index, "Active data conn waits to open...\r\n");

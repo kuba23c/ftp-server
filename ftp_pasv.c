@@ -87,7 +87,7 @@ static err_t ftp_pasv_listener_accept(void *arg, struct tcp_pcb *newpcb, err_t e
 
 	if (data->listener_pcb == NULL) {
 		ftp_pasv_listener.stats.listeners_data_conn_rejected++;
-	} else if (ftp_data_conn_start(data->index, newpcb, DCM_PASSIVE) == ERR_OK) {
+	} else if (ftp_data_conn_start(data->index, newpcb) == ERR_OK) {
 		ftp_pasv_listener.stats.listeners_data_conn_accepted++;
 		return (ftp_pasv_data_close(data));
 	} else {
@@ -112,6 +112,7 @@ static err_t ftp_listener_poll(void *arg, struct tcp_pcb *tpcb) {
 	data->idle_cnt++;
 	if (data->idle_cnt >= FTP_TCP_MAX_IDLE_SEC) {
 		ftp_pasv_listener.stats.listeners_timeouts++;
+		ftp_cmd_resp_send(data->index, "425 Can't create connection\r\n");
 		return (ftp_pasv_data_close(data));
 	}
 	return (ERR_OK);
@@ -151,6 +152,7 @@ static void ftp_pasv_listener_start(void *ctx) {
 		ftp_cmd_resp_send(data->index, "227 Entering Passive Mode (%d,%d,%d,%d,%d,%d).\r\n", ip4_addr1(&(data->listener_pcb->local_ip)),
 				ip4_addr2(&(data->listener_pcb->local_ip)), ip4_addr3(&(data->listener_pcb->local_ip)), ip4_addr3(&(data->listener_pcb->local_ip)),
 				data->listener_pcb->local_port >> 8, data->listener_pcb->local_port & 255);
+		ftp_set_data_conn_mode(data->index, DCM_PASSIVE);
 	} else {
 		ftp_pasv_listener.stats.listeners_rejected++;
 		ftp_cmd_resp_send(data->index, "425 Can't set connection management to passive\r\n");

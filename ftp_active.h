@@ -22,6 +22,8 @@ typedef struct {
 	uint32_t active_timeouts;
 } ftp_active_stats_t;
 
-err_t ftp_active_connect(uint8_t index, uint8_t a, uint8_t b, uint8_t c, uint8_t d, uint16_t port);
+void ftp_active_set_ip(uint8_t index, uint8_t a, uint8_t b, uint8_t c, uint8_t d);
+void ftp_active_set_port(uint8_t index, uint16_t port);
+err_t ftp_active_connect(uint8_t index);
 
 #endif /* FTP_SERVER_FTP_ACTIVE_H_ */

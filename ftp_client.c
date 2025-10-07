@@ -44,6 +44,7 @@ typedef struct {
 
 	char path[FTP_CWD_SIZE];
 	ftp_user_t user;
+	dcm_type data_conn_mode;
 } ftp_client_t;
 
 typedef struct {
@@ -63,6 +64,14 @@ bool ftp_is_logged_in(uint8_t index) {
 
 char* ftp_get_path(uint8_t index) {
 	return (ftp_clients.client[index].path);
+}
+
+void ftp_set_data_conn_mode(uint8_t index, dcm_type mode) {
+	ftp_clients.client[index].data_conn_mode = mode;
+}
+
+dcm_type ftp_get_data_conn_mode(uint8_t index) {
+	return (ftp_clients.client[index].data_conn_mode);
 }
 
 static void ftp_cmd_resp_send_cb(void *ctx) {
@@ -115,6 +124,7 @@ static void ftp_client_clean(ftp_client_t *client) {
 	client->idle_cnt = 0;
 	client->client_pcb = NULL;
 	client->len = 0;
+	client->data_conn_mode = DCM_NOT_SET;
 	xSemaphoreGive(client->buff_available_sem);
 }
 
@@ -313,6 +323,7 @@ void ftp_clients_init(void) {
 			ftp_clients.client[i].index = i;
 			ftp_clients.client[i].idle_cnt = 0;
 			ftp_clients.client[i].len = 0;
+			ftp_clients.client[i].data_conn_mode = DCM_NOT_SET;
 			ftp_clients.client[i].buff_available_sem = xSemaphoreCreateBinary();
 			assert_param(ftp_clients.client[i].buff_available_sem != NULL);
 			xSemaphoreGive(ftp_clients.client[i].buff_available_sem);

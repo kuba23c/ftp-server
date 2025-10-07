@@ -12,12 +12,6 @@
 #include "ftp_cmd.h"
 #include "lwrb.h"
 
-typedef enum {
-	DCM_NOT_SET,
-	DCM_PASSIVE,
-	DCM_ACTIVE
-} dcm_type;
-
 typedef struct {
 	uint8_t clients_connected;
 	uint8_t clients_max;
@@ -33,7 +27,7 @@ ftp_result_t ftp_data_lock(uint8_t index);
 void ftp_data_unlock(uint8_t index);
 lwrb_t* ftp_data_get_lwrb(uint8_t index);
 
-err_t ftp_data_conn_start(uint8_t index, struct tcp_pcb *newpcb, dcm_type mode);
+err_t ftp_data_conn_start(uint8_t index, struct tcp_pcb *newpcb);
 void ftp_data_conn_stop(uint8_t index);
 void ftp_data_conns_stop(void);
 void ftp_data_conn_init(void);

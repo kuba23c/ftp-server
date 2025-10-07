@@ -11,6 +11,12 @@
 #include <stdint.h>
 #include "ftp_cmd.h"
 
+typedef enum {
+	DCM_NOT_SET,
+	DCM_PASSIVE,
+	DCM_ACTIVE
+} dcm_type;
+
 typedef struct {
 	uint8_t clients_connected;
 	uint8_t clients_max;
@@ -24,6 +30,8 @@ typedef struct {
 ftp_result_t ftp_cmd_resp_send(uint8_t index, const char *fmt, ...);
 bool ftp_is_logged_in(uint8_t index);
 char* ftp_get_path(uint8_t index);
+void ftp_set_data_conn_mode(uint8_t index, dcm_type mode);
+dcm_type ftp_get_data_conn_mode(uint8_t index);
 
 err_t ftp_client_start(struct tcp_pcb *newpcb);
 void ftp_client_stop(uint8_t index);

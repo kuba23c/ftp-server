@@ -12,6 +12,7 @@
 #include "ftp_data.h"
 #include "ftp_client.h"
 #include "ftp_pasv.h"
+#include "ftp_active.h"
 
 #define FTP_PARAM_SIZE					_MAX_LFN + 8
 #define FTP_CMD_SIZE					5
@@ -183,22 +184,116 @@ static ftp_result_t ftp_cmd_type(ftp_cmd_handler_data_t *const data) {
 	}
 }
 
+// set passive data connection
 static ftp_result_t ftp_cmd_pasv(ftp_cmd_handler_data_t *const data) {
 	if (!ftp_is_logged_in(data->index)) {
 		return (FTP_RES_OK);
 	}
 #if FTP_USE_PASSIVE_MODE == 1
 	if (ftp_pasv_start(data->index)) {
+
 		return (FTP_RES_OK);
 	} else {
 		ftp_cmd_resp_send(data->index, "425 Can't set connection management to passive\r\n");
 		return (FTP_RES_ERROR);
 	}
 #else
-	ftp->dataConnMode = DCM_NOT_SET;
-	return (ftp_send(ftp, "421 Passive mode not available\r\n"));
+	return (ftp_cmd_resp_send(data->index, "421 Passive mode not available\r\n"));
 #endif
 }
+
+// set active data connection
+static ftp_result_t ftp_cmd_port(ftp_cmd_handler_data_t *const data) {
+	if (!ftp_is_logged_in(data->index)) {
+		return (FTP_RES_OK);
+	}
+
+	if (data->parameters_len == 0) {
+		return (ftp_cmd_resp_send(data->index, "501 no parameters given\r\n"));
+	}
+
+	// Start building IP
+	uint8_t ip[4] = { 0 };
+	uint8_t i = 0;
+	uint16_t port = 0;
+
+	char *p = data->parameters - 1;
+	for (i = 0; i < 4 && p != NULL; i++) {
+		if (p == NULL) {
+			break;
+		}
+		ip[i] = atoi(++p);
+		p = strchr(p, ',');
+	}
+
+	if (p != NULL) {
+		if (i == 4) {
+			port = 256 * atoi(++p);
+		}
+		p = strchr(p, ',');
+		if (p != NULL) {
+			port += atoi(++p);
+		}
+	}
+
+	if (p == NULL) {
+		return (ftp_cmd_resp_send(data->index, "501 Can't interpret parameters\r\n"));
+	}
+
+	DEBUG_PRINT(data->index, "Data IP set to %u:%u:%u:%u\r\n", ip[0], ip[1], ip[2], ip[3]);
+	DEBUG_PRINT(data->index, "Data port set to %u\r\n", port);
+
+	ftp_active_set_ip(data->index, ip[0], ip[1], ip[2], ip[3]);
+	ftp_active_set_port(data->index, port);
+	ftp_set_data_conn_mode(data->index, DCM_ACTIVE);
+
+	return (ftp_cmd_resp_send(data->index, "200 PORT command successful\r\n"));
+}
+
+//static ftp_result_t ftp_cmd_list(ftp_cmd_handler_data_t *const data) {
+//	if (!ftp_is_logged_in(data->index)) {
+//		return (FTP_RES_OK);
+//	}
+//
+//	DIR dir;
+//	if (FTP_F_OPENDIR(&dir, ftp->path) != FR_OK) {
+//		return (ftp_cmd_resp_send(data->index, "550 Can't open directory %s\r\n", ftp->parameters));
+//	}
+//	if (data_con_open(ftp) != FTP_RES_OK) {
+//		ftp_cmd_resp_send(data->index, "425 Can't create connection\r\n");
+//		return (FTP_RES_ERROR);
+//	}
+//	if (ftp_cmd_resp_send(data->index, "150 Accepted data connection\r\n") != FTP_RES_OK) {
+//		return (FTP_RES_ERROR);
+//	}
+//
+//	while (FTP_F_READDIR(&dir, &ftp->finfo) == FR_OK) {
+//		if (ftp->finfo.fname[0] == 0) {
+//			break;
+//		}
+//		if (ftp->finfo.fname[0] == '.') {
+//			continue;
+//		}
+//		if (strcmp(ftp->command, "LIST")) {
+//			snprintf(ftp->ftp_buff, FTP_BUF_SIZE, "%s\r\n", ftp->finfo.fname);
+//		} else if (ftp->finfo.fattrib & AM_DIR) {
+//			snprintf(ftp->ftp_buff, FTP_BUF_SIZE, "+/,\t%s\r\n", ftp->finfo.fname);
+//		} else {
+//			snprintf(ftp->ftp_buff, FTP_BUF_SIZE, "+r,s%ld,\t%s\r\n", ftp->finfo.fsize, ftp->finfo.fname);
+//		}
+//		if (netconn_write(ftp->dataconn, ftp->ftp_buff, strlen(ftp->ftp_buff)) != FTP_RES_OK) {
+//			FTP_F_CLOSEDIR(&dir);
+//			data_con_close(ftp);
+//			return (FTP_RES_ERROR);
+//		}
+//	}
+//
+//	FTP_F_CLOSEDIR(&dir);
+//	if (data_con_close(ftp) != FTP_RES_OK) {
+//		return (FTP_RES_ERROR);
+//	}
+//	return (ftp_cmd_resp_send(data->index, "226 Directory send OK.\r\n"));
+//}
 
 static ftp_cmd_handlers_t ftpd_commands[] = { //
 		{ "NOOP", ftp_cmd_noop }, //
@@ -210,7 +305,7 @@ static ftp_cmd_handlers_t ftpd_commands[] = { //
 		{ "STRU", ftp_cmd_stru }, //
 		{ "TYPE", ftp_cmd_type }, //
 		{ "PASV", ftp_cmd_pasv }, //
-//		{ "PORT", ftp_cmd_port }, //
+		{ "PORT", ftp_cmd_port }, //
 //		{ "NLST", ftp_cmd_list }, //
 //		{ "LIST", ftp_cmd_list }, //
 //		{ "MLSD", ftp_cmd_mlsd }, //
