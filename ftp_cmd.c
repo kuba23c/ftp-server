@@ -250,50 +250,38 @@ static ftp_result_t ftp_cmd_port(ftp_cmd_handler_data_t *const data) {
 	return (ftp_cmd_resp_send(data->index, "200 PORT command successful\r\n"));
 }
 
-//static ftp_result_t ftp_cmd_list(ftp_cmd_handler_data_t *const data) {
-//	if (!ftp_is_logged_in(data->index)) {
-//		return (FTP_RES_OK);
-//	}
-//
-//	DIR dir;
-//	if (FTP_F_OPENDIR(&dir, ftp->path) != FR_OK) {
-//		return (ftp_cmd_resp_send(data->index, "550 Can't open directory %s\r\n", ftp->parameters));
-//	}
-//	if (data_con_open(ftp) != FTP_RES_OK) {
-//		ftp_cmd_resp_send(data->index, "425 Can't create connection\r\n");
-//		return (FTP_RES_ERROR);
-//	}
-//	if (ftp_cmd_resp_send(data->index, "150 Accepted data connection\r\n") != FTP_RES_OK) {
-//		return (FTP_RES_ERROR);
-//	}
-//
-//	while (FTP_F_READDIR(&dir, &ftp->finfo) == FR_OK) {
-//		if (ftp->finfo.fname[0] == 0) {
-//			break;
-//		}
-//		if (ftp->finfo.fname[0] == '.') {
-//			continue;
-//		}
-//		if (strcmp(ftp->command, "LIST")) {
-//			snprintf(ftp->ftp_buff, FTP_BUF_SIZE, "%s\r\n", ftp->finfo.fname);
-//		} else if (ftp->finfo.fattrib & AM_DIR) {
-//			snprintf(ftp->ftp_buff, FTP_BUF_SIZE, "+/,\t%s\r\n", ftp->finfo.fname);
-//		} else {
-//			snprintf(ftp->ftp_buff, FTP_BUF_SIZE, "+r,s%ld,\t%s\r\n", ftp->finfo.fsize, ftp->finfo.fname);
-//		}
-//		if (netconn_write(ftp->dataconn, ftp->ftp_buff, strlen(ftp->ftp_buff)) != FTP_RES_OK) {
-//			FTP_F_CLOSEDIR(&dir);
-//			data_con_close(ftp);
-//			return (FTP_RES_ERROR);
-//		}
-//	}
-//
-//	FTP_F_CLOSEDIR(&dir);
-//	if (data_con_close(ftp) != FTP_RES_OK) {
-//		return (FTP_RES_ERROR);
-//	}
-//	return (ftp_cmd_resp_send(data->index, "226 Directory send OK.\r\n"));
-//}
+static ftp_result_t data_con_open(ftp_cmd_handler_data_t *const data) {
+	dcm_type mode = ftp_get_data_conn_mode(data->index);
+	if (mode == DCM_PASSIVE) {
+		return (FTP_RES_OK);
+	} else if (mode == DCM_ACTIVE) {
+		err_t err = ftp_active_connect(data->index);
+		if (err == ERR_OK) {
+			DEBUG_PRINT(data->index, "Starting Active connection\r\n");
+			return (FTP_RES_OK);
+		} else {
+			DEBUG_PRINT(data->index, "Failed to start Active connection\r\n");
+			return (FTP_RES_ERROR);
+		}
+	} else {
+		return (FTP_RES_ERROR);
+	}
+}
+
+static ftp_result_t ftp_cmd_list(ftp_cmd_handler_data_t *const data) {
+	if (!ftp_is_logged_in(data->index)) {
+		return (FTP_RES_OK);
+	}
+
+	if (data_con_open(data) != FTP_RES_OK) {
+		ftp_cmd_resp_send(data->index, "425 Can't create connection\r\n");
+		return (FTP_RES_ERROR);
+	}
+	if (ftp_cmd_resp_send(data->index, "150 Accepted data connection\r\n") != FTP_RES_OK) {
+		return (FTP_RES_ERROR);
+	}
+	return (FTP_RES_OK);
+}
 
 static ftp_cmd_handlers_t ftpd_commands[] = { //
 		{ "NOOP", ftp_cmd_noop }, //
@@ -306,8 +294,8 @@ static ftp_cmd_handlers_t ftpd_commands[] = { //
 		{ "TYPE", ftp_cmd_type }, //
 		{ "PASV", ftp_cmd_pasv }, //
 		{ "PORT", ftp_cmd_port }, //
-//		{ "NLST", ftp_cmd_list }, //
-//		{ "LIST", ftp_cmd_list }, //
+		{ "NLST", ftp_cmd_list }, //
+		{ "LIST", ftp_cmd_list }, //
 //		{ "MLSD", ftp_cmd_mlsd }, //
 //		{ "DELE", ftp_cmd_dele }, //
 //		{ "RETR", ftp_cmd_retr }, //

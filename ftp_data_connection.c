@@ -10,6 +10,7 @@
 #include "ftp_data.h"
 #include "FreeRTOS.h"
 #include "semphr.h"
+#include "ftp_client.h"
 
 #define FTP_TCP_KEEP_IDLE 	3000
 #define FTP_TCP_KEEP_INTVL 	1000
@@ -28,6 +29,8 @@ typedef struct {
 	lwrb_t lwrb;
 	struct tcpip_callback_msg *cb;
 	SemaphoreHandle_t mutex;
+
+	struct tcpip_callback_msg *close_cb;
 } ftp_data_conn_t;
 
 typedef struct {
@@ -112,6 +115,13 @@ static err_t ftp_data_conn_close(ftp_data_conn_t *data_conn) {
 		tcp_abort(data_conn->client_pcb);
 		xSemaphoreGive(data_conn->mutex);
 		return (ERR_ABRT);
+	}
+}
+
+static void ftp_data_close_cb(void *ctx) {
+	ftp_data_conn_t *data_conn = (ftp_data_conn_t*) ctx;
+	if (data_conn->client_pcb) {
+		ftp_data_conn_close(data_conn);
 	}
 }
 
@@ -262,6 +272,10 @@ void ftp_data_conns_stop(void) {
 	}
 }
 
+err_t ftp_data_conn_stop_ex(uint8_t index) {
+	return (tcpip_callbackmsg_trycallback(ftp_data_conns.client[index].close_cb));
+}
+
 void ftp_data_conns_init(void) {
 	if (!ftp_data_conns.inited) {
 		ftp_data_conns.inited = true;
@@ -275,6 +289,8 @@ void ftp_data_conns_init(void) {
 			xSemaphoreGive(ftp_data_conns.client[i].mutex);
 			ftp_data_conns.client[i].cb = tcpip_callbackmsg_new(ftp_data_send_cb, &(ftp_data_conns.client[i]));
 			assert_param(ftp_data_conns.client[i].cb != NULL);
+			ftp_data_conns.client[i].close_cb = tcpip_callbackmsg_new(ftp_data_close_cb, &(ftp_data_conns.client[i]));
+			assert_param(ftp_data_conns.client[i].close_cb != NULL);
 		}
 	}
 }

@@ -20,19 +20,27 @@ typedef struct {
 } ftp_data_stats_t;
 
 typedef enum {
+	FTP_DATA_MSG_NONE,
 	FTP_DATA_MSG_RECV,
 	FTP_DATA_MSG_SENT,
 	FTP_DATA_MSG_START_RX,
 	FTP_DATA_MSG_START_TX,
+	FTP_DATA_MSG_LIST,
 	FTP_DATA_MSG_STOP,
 } ftp_data_msg_type_t;
+
+typedef struct {
+	struct pbuf *p;
+	char *parameters;
+	char *command;
+} ftp_data_msg_data_params_t;
 
 typedef union __PACKED {
 	struct pbuf *recv_p;
 	uint16_t sent_len;
-	char *start_rx_path;
-	char *start_tx_path;
+	char *path;
 	void *stop;
+	ftp_data_msg_data_params_t list;
 } ftp_data_msg_data_t;
 
 typedef struct __PACKED {
