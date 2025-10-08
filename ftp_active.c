@@ -142,9 +142,9 @@ static void ftp_active_connect_cb(void *ctx) {
 		ftp_active.stats.active_connected++;
 		err_t err = tcp_connect(data->pcb, &(data->ipaddr), data->port, ftp_active_connected);
 		if (err == ERR_OK) {
-			DEBUG_PRINT(index, "Active data conn connecting...\r\n");
+			DEBUG_PRINT(data->index, "Active data conn connecting...\r\n");
 		} else {
-			DEBUG_PRINT(index, "Error on connecting active data conn: %d\r\n", err);
+			DEBUG_PRINT(data->index, "Error on connecting active data conn: %d\r\n", err);
 		}
 	} else {
 		ftp_active.stats.active_rejected++;

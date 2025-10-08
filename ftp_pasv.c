@@ -106,9 +106,12 @@ static err_t ftp_pasv_listener_accept(void *arg, struct tcp_pcb *newpcb, err_t e
  *            Only return ERR_ABRT if you have called tcp_abort from within the
  *            callback function!
  */
-static err_t ftp_listener_poll(void *arg, struct tcp_pcb *tpcb) {
-	ftp_pasv_listener_data_t *data = (ftp_pasv_listener_data_t*) arg;
+err_t ftp_pasv_listener_poll(uint8_t index) {
+	ftp_pasv_listener_data_t *data = &(ftp_pasv_listener.data[index]);
 
+	if (data->listener_pcb == NULL) {
+		return (ERR_OK);
+	}
 	data->idle_cnt++;
 	if (data->idle_cnt >= FTP_TCP_MAX_IDLE_SEC) {
 		ftp_pasv_listener.stats.listeners_timeouts++;
@@ -142,15 +145,14 @@ static void ftp_pasv_listener_start(void *ctx) {
 			ftp_cmd_resp_send(data->index, "425 Can't set connection management to passive\r\n");
 			return;
 		}
-		tcp_arg(data->listener_pcb, &data->listener_pcb);
+		tcp_arg(data->listener_pcb, data);
 		tcp_accept(data->listener_pcb, ftp_pasv_listener_accept);
 		data->idle_cnt = 0;
-		tcp_poll(data->listener_pcb, ftp_listener_poll, 2);
 		ftp_pasv_listener.stats.listeners_active++;
 		ftp_pasv_listener.stats.listeners_opened++;
 
-		ftp_cmd_resp_send(data->index, "227 Entering Passive Mode (%d,%d,%d,%d,%d,%d).\r\n", ip4_addr1(&(data->listener_pcb->local_ip)),
-				ip4_addr2(&(data->listener_pcb->local_ip)), ip4_addr3(&(data->listener_pcb->local_ip)), ip4_addr3(&(data->listener_pcb->local_ip)),
+		const ip4_addr_t *addr = netif_ip4_addr(netif_default);
+		ftp_cmd_resp_send(data->index, "227 Entering Passive Mode (%d,%d,%d,%d,%d,%d).\r\n", ip4_addr1(addr), ip4_addr2(addr), ip4_addr3(addr), ip4_addr4(addr),
 				data->listener_pcb->local_port >> 8, data->listener_pcb->local_port & 255);
 		ftp_set_data_conn_mode(data->index, DCM_PASSIVE);
 	} else {
@@ -159,14 +161,18 @@ static void ftp_pasv_listener_start(void *ctx) {
 	}
 }
 
-static void ftp_pasv_listener_stop(void *ctx) {
+static void ftp_pasv_listener_stop_cb(void *ctx) {
 	ftp_pasv_listener_data_t *data = (ftp_pasv_listener_data_t*) ctx;
 
-	uint8_t index = data->index;
 	if (data->listener_pcb) {
 		ftp_pasv_data_close(data);
 	}
-	ftp_data_conn_stop(index);
+}
+
+void ftp_pasv_listener_stop(uint8_t index) {
+	if (ftp_pasv_listener.data[index].listener_pcb) {
+		ftp_pasv_data_close(&(ftp_pasv_listener.data[index]));
+	}
 }
 
 void ftp_pasv_listeners_stop(void) {
@@ -189,7 +195,7 @@ void ftp_pasv_init(void) {
 			ftp_pasv_listener.data[i].index = i;
 			ftp_pasv_listener.data[i].create_listener = tcpip_callbackmsg_new(ftp_pasv_listener_start, &(ftp_pasv_listener.data[i]));
 			assert_param(ftp_pasv_listener.data[i].create_listener != NULL);
-			ftp_pasv_listener.data[i].delete_listener = tcpip_callbackmsg_new(ftp_pasv_listener_stop, &(ftp_pasv_listener.data[i]));
+			ftp_pasv_listener.data[i].delete_listener = tcpip_callbackmsg_new(ftp_pasv_listener_stop_cb, &(ftp_pasv_listener.data[i]));
 			assert_param(ftp_pasv_listener.data[i].delete_listener != NULL);
 		}
 	}

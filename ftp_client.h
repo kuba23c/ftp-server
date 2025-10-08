@@ -33,18 +33,20 @@ typedef struct {
 	uint32_t clients_closed;
 } ftp_clients_stats_t;
 
+void ftp_client_refresh(uint8_t index);
 ftp_result_t ftp_cmd_resp_send(uint8_t index, const char *fmt, ...);
 bool ftp_is_logged_in(uint8_t index);
 ftp_user_t ftp_get_user(uint8_t index);
 void ftp_set_user(uint8_t index, ftp_user_t user);
-bool ftp_is_user_name_ok(char *name);
-bool ftp_is_pass_ok(char *pass);
+bool ftp_is_user_name_ok(char *name, uint16_t len);
+bool ftp_is_pass_ok(char *pass, uint16_t len);
 char* ftp_get_path(uint8_t index);
 void ftp_set_data_conn_mode(uint8_t index, dcm_type mode);
 dcm_type ftp_get_data_conn_mode(uint8_t index);
 
 err_t ftp_client_start(struct tcp_pcb *newpcb);
 void ftp_client_stop(uint8_t index);
+err_t ftp_client_stop_ex(uint8_t index);
 void ftp_clients_stop(void);
 void ftp_clients_init(void);
 

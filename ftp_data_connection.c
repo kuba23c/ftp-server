@@ -11,13 +11,14 @@
 #include "FreeRTOS.h"
 #include "semphr.h"
 #include "ftp_client.h"
+#include "lwip.h"
 
 #define FTP_TCP_KEEP_IDLE 	3000
 #define FTP_TCP_KEEP_INTVL 	1000
 #define FTP_TCP_KEEP_CNT 	3
 #define FTP_TCP_MAX_IDLE_SEC	5
 
-#define FTP_BUF_SIZE_MIN 			1024
+#define FTP_BUF_SIZE_MIN 			TCP_SND_BUF
 #define FTP_BUF_SIZE 				(FTP_BUF_SIZE_MIN * FTP_BUF_SIZE_MULT)
 
 typedef struct {
@@ -25,7 +26,7 @@ typedef struct {
 	struct tcp_pcb *client_pcb;
 	uint8_t idle_cnt;
 
-	ALIGN_32BYTES(char ftp_buff[FTP_BUF_SIZE + 1]);
+	char *ftp_buff;
 	lwrb_t lwrb;
 	struct tcpip_callback_msg *cb;
 	SemaphoreHandle_t mutex;
@@ -40,11 +41,15 @@ typedef struct {
 } ftp_data_conns_t;
 
 static ftp_data_conns_t ftp_data_conns = { 0 };
+FTP_STRUCT_MEM_SECTION(ALIGN_32BYTES(static char ftp_buffs[FTP_NBR_CLIENTS][FTP_BUF_SIZE])) = {0};
 
 static void ftp_data_send_cb(void *ctx) {
 	ftp_data_conn_t *data_conn = (ftp_data_conn_t*) ctx;
 	lwrb_sz_t len = lwrb_get_linear_block_read_length(&(data_conn->lwrb));
 	void *addr = lwrb_get_linear_block_read_address(&(data_conn->lwrb));
+	if (len > TCP_SND_BUF) {
+		len = TCP_SND_BUF;
+	}
 	if (data_conn->client_pcb != NULL && len != 0) {
 		tcp_write(data_conn->client_pcb, addr, len, 0);
 	}
@@ -176,16 +181,29 @@ static err_t ftp_data_conn_poll(void *arg, struct tcp_pcb *tpcb) {
 static err_t ftp_data_conn_sent(void *arg, struct tcp_pcb *tpcb, u16_t len) {
 	ftp_data_conn_t *data_conn = (ftp_data_conn_t*) arg;
 	data_conn->idle_cnt = 0;
+	ftp_client_refresh(data_conn->index);
 
-	ftp_data_msg_t msg = { 0 };
-	msg.msg_type = FTP_DATA_MSG_SENT;
-	msg.index = data_conn->index;
-	msg.data.sent_len = len;
-	if (ftp_data_handle(&msg) == ERR_OK) {
-		return (ERR_OK);
+	lwrb_skip(&(data_conn->lwrb), len);
+	uint32_t available_len = lwrb_get_full(&(data_conn->lwrb));
+
+	if (available_len <= TCP_SND_BUF) {
+		if (available_len != 0) {
+			ftp_data_send(data_conn->index);
+		}
+		ftp_data_msg_t msg = { 0 };
+		msg.msg_type = FTP_DATA_MSG_SENT;
+		msg.index = data_conn->index;
+		msg.data.sent_len = len;
+		if (ftp_data_handle(&msg) == ERR_OK) {
+			return (ERR_OK);
+		} else {
+			return (ftp_data_conn_close(data_conn));
+		}
 	} else {
-		return (ftp_data_conn_close(data_conn));
+		ftp_data_send(data_conn->index);
 	}
+
+	return (ERR_OK);
 }
 
 /** Function prototype for tcp receive callback functions. Called when data has
@@ -218,6 +236,7 @@ static err_t ftp_data_conn_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p,
 	}
 
 	data_conn->idle_cnt = 0;
+	ftp_client_refresh(data_conn->index);
 	msg.msg_type = FTP_DATA_MSG_RECV;
 	msg.index = data_conn->index;
 	msg.data.recv_p = p;
@@ -258,6 +277,11 @@ err_t ftp_data_conn_start(uint8_t index, struct tcp_pcb *newpcb) {
 		ftp_data_conns.stats.clients_accepted++;
 		ftp_data_conns.stats.clients_connected++;
 		ftp_cmd_resp_send(index, "150 Accepted data connection\r\n");
+		ftp_data_msg_t msg = { 0 };
+		msg.msg_type = FTP_DATA_MSG_CONNECTED;
+		msg.index = index;
+		msg.data.stop = NULL;
+		ftp_data_handle(&msg);
 	}
 	return (result);
 }
@@ -287,6 +311,7 @@ void ftp_data_conns_init(void) {
 		for (uint8_t i = 0; i < FTP_NBR_CLIENTS; ++i) {
 			ftp_data_conns.client[i].index = i;
 			ftp_data_conns.client[i].idle_cnt = 0;
+			ftp_data_conns.client[i].ftp_buff = ftp_buffs[i];
 			assert_param(lwrb_init(&(ftp_data_conns.client[i].lwrb), ftp_data_conns.client[i].ftp_buff, FTP_BUF_SIZE + 1) == 1);
 			ftp_data_conns.client[i].mutex = xSemaphoreCreateMutex();
 			assert_param(ftp_data_conns.client[i].mutex != NULL);

@@ -108,7 +108,7 @@
  * IMPORTANT: should be aligned to 512 (FATFS sector size) and no less than 1024,
  */
 #ifndef FTP_BUF_SIZE_MULT
-#define FTP_BUF_SIZE_MULT 32
+#define FTP_BUF_SIZE_MULT 5
 #endif
 
 #ifndef FTP_STRUCT_MEM_SECTION
@@ -179,6 +179,5 @@
 #ifndef FTP_UNPACK_CALLBACK
 #define FTP_UNPACK_CALLBACK(src, src_len, dst, dst_len, src_read_bytes, dst_written_bytes) do {} while(0)
 #endif
-
 
 #endif /* FTP_SERVER_FTP_CONFIG_H_ */

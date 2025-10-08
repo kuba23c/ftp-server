@@ -35,6 +35,8 @@ typedef struct {
 	int temp_len;
 	bool not_finished;
 	char *path;
+	bool connected;
+	bool data_waits;
 } ftp_data_t;
 
 typedef struct {
@@ -60,7 +62,7 @@ static void ftp_data_list_handle(ftp_data_t *data) {
 		data->available_len = lwrb_get_linear_block_write_length(data->lwrb);
 		data->written_len = 0;
 
-		if (data->is_list) {
+		if (!data->is_list) {
 			data->temp_len = snprintf(data->addr, data->available_len, "%s\r\n", data->finfo.fname);
 		} else if (data->finfo.fattrib & AM_DIR) {
 			data->temp_len = snprintf(data->addr, data->available_len, "+/,\t%s\r\n", data->finfo.fname);
@@ -84,12 +86,12 @@ static void ftp_data_list_handle(ftp_data_t *data) {
 		if (data->finfo.fname[0] == '.') {
 			continue;
 		}
-		if (data->is_list) {
-			data->temp_len = snprintf(data->addr, data->available_len, "%s\r\n", data->finfo.fname);
+		if (!data->is_list) {
+			data->temp_len = snprintf(data->addr + data->written_len, data->available_len, "%s\r\n", data->finfo.fname);
 		} else if (data->finfo.fattrib & AM_DIR) {
-			data->temp_len = snprintf(data->addr, data->available_len, "+/,\t%s\r\n", data->finfo.fname);
+			data->temp_len = snprintf(data->addr + data->written_len, data->available_len, "+/,\t%s\r\n", data->finfo.fname);
 		} else {
-			data->temp_len = snprintf(data->addr, data->available_len, "+r,s%ld,\t%s\r\n", data->finfo.fsize, data->finfo.fname);
+			data->temp_len = snprintf(data->addr + data->written_len, data->available_len, "+r,s%ld,\t%s\r\n", data->finfo.fsize, data->finfo.fname);
 		}
 		if (data->temp_len < data->available_len) {
 			data->available_len -= data->temp_len;
@@ -102,7 +104,21 @@ static void ftp_data_list_handle(ftp_data_t *data) {
 	}
 
 	lwrb_advance(data->lwrb, data->written_len);
-	ftp_data_send(data->index);
+	if (lwrb_get_full(data->lwrb) == 0) {
+		data->type = FTP_DATA_MSG_NONE;
+		data->connected = false;
+		data->data_waits = false;
+		DEBUG_PRINT(data->index, "Sent %lu bytes\r\n", data->all_bytes_transfered);
+		ftp_cmd_resp_send(data->index, "226 Directory send OK, %lu bytes\r\n", data->all_bytes_transfered);
+		ftp_data_conn_stop_ex(data->index);
+		lwrb_reset(data->lwrb);
+	} else if (data->connected) {
+		ftp_data_send(data->index);
+		DEBUG_PRINT(data->index, "DATA list send, connected\r\n");
+	} else {
+		data->data_waits = true;
+		DEBUG_PRINT(data->index, "DATA list not send, not connected\r\n");
+	}
 }
 
 static ftp_result_t ftp_data_tx_handle(ftp_data_t *data) {
@@ -134,7 +150,21 @@ static ftp_result_t ftp_data_tx_handle(ftp_data_t *data) {
 	}
 
 	lwrb_advance(data->lwrb, data->written_len);
-	ftp_data_send(data->index);
+	if (lwrb_get_full(data->lwrb) == 0) {
+		data->type = FTP_DATA_MSG_NONE;
+		data->connected = false;
+		data->data_waits = false;
+		DEBUG_PRINT(data->index, "Sent %lu bytes\r\n", data->all_bytes_transfered);
+		ftp_cmd_resp_send(data->index, "226 File successfully transferred, %lu bytes\r\n", data->all_bytes_transfered);
+		ftp_data_conn_stop_ex(data->index);
+		lwrb_reset(data->lwrb);
+	} else if (data->connected) {
+		ftp_data_send(data->index);
+		DEBUG_PRINT(data->index, "DATA tx send, connected\r\n");
+	} else {
+		data->data_waits = true;
+		DEBUG_PRINT(data->index, "DATA tx not send, not connected\r\n");
+	}
 	return (FTP_RES_OK);
 }
 
@@ -176,39 +206,60 @@ __NO_RETURN static void ftp_data_task(void *pvParameters) {
 		case FTP_DATA_MSG_SENT:
 			if (data->type == FTP_DATA_MSG_LIST) {
 				if (ftp_data_lock(msg.index) != FTP_RES_OK) {
-					ftp_cmd_resp_send(msg.index, "550 Can't lock task, closing %s\r\n", data->finfo.fname);
+					data->type = FTP_DATA_MSG_NONE;
+					data->connected = false;
+					data->data_waits = false;
+					ftp_cmd_resp_send(msg.index, "550 Can't lock task, closing folder\r\n");
 					FTP_F_CLOSEDIR(&(data->dir));
 					ftp_data_conn_stop_ex(msg.index);
+					lwrb_reset(data->lwrb);
 					break;
 				}
+				DEBUG_PRINT(data->index, "DATA sent len: %d\r\n", msg.data.sent_len);
 				if (data->not_finished) {
-					lwrb_skip(data->lwrb, msg.data.sent_len);
+					DEBUG_PRINT(data->index, "DATA not finished...\r\n");
 					ftp_data_list_handle(data);
 				} else if (lwrb_get_full(data->lwrb) == 0) {
 					data->type = FTP_DATA_MSG_NONE;
+					data->connected = false;
+					data->data_waits = false;
 					DEBUG_PRINT(msg.index, "Sent %lu bytes\r\n", data->all_bytes_transfered);
 					ftp_cmd_resp_send(msg.index, "226 Directory send OK, %lu bytes\r\n", data->all_bytes_transfered);
 					ftp_data_conn_stop_ex(msg.index);
+					lwrb_reset(data->lwrb);
+				} else {
+					DEBUG_PRINT(data->index, "DATA waiting for transfer end...\r\n");
 				}
 				ftp_data_unlock(msg.index);
 			} else if (data->type == FTP_DATA_MSG_START_TX) {
 				if (ftp_data_lock(msg.index) != FTP_RES_OK) {
-					ftp_cmd_resp_send(msg.index, "550 Can't lock task, closing %s\r\n", msg.data.tx.parameters);
+					data->type = FTP_DATA_MSG_NONE;
+					data->connected = false;
+					data->data_waits = false;
+					ftp_cmd_resp_send(msg.index, "550 Can't lock task, closing %s\r\n", data->finfo.fname);
 					FTP_F_CLOSE(&(data->file));
 					path_up_a_level(msg.data.tx.path);
 					ftp_data_conn_stop_ex(msg.index);
+					lwrb_reset(data->lwrb);
 					break;
 				}
+				DEBUG_PRINT(data->index, "DATA sent len: %d\r\n", msg.data.sent_len);
 				if (data->not_finished) {
-					lwrb_skip(data->lwrb, msg.data.sent_len);
+					DEBUG_PRINT(data->index, "DATA not finished...\r\n");
 					if (ftp_data_tx_handle(data) != FTP_RES_OK) {
+						DEBUG_PRINT(data->index, "DATA read file error, Something went wrong\r\n");
 						ftp_data_conn_stop_ex(msg.index);
 					}
 				} else if (lwrb_get_full(data->lwrb) == 0) {
 					data->type = FTP_DATA_MSG_NONE;
+					data->connected = false;
+					data->data_waits = false;
 					DEBUG_PRINT(msg.index, "Sent %lu bytes\r\n", data->all_bytes_transfered);
 					ftp_cmd_resp_send(msg.index, "226 File successfully transferred, %lu bytes\r\n", data->all_bytes_transfered);
 					ftp_data_conn_stop_ex(msg.index);
+					lwrb_reset(data->lwrb);
+				} else {
+					DEBUG_PRINT(data->index, "DATA waiting for transfer end...\r\n");
 				}
 				ftp_data_unlock(msg.index);
 			}
@@ -238,7 +289,7 @@ __NO_RETURN static void ftp_data_task(void *pvParameters) {
 			}
 			data->path = msg.data.tx.path;
 			data->index = msg.index;
-			data->all_bytes_transfered = 0;
+			data->not_finished = false;
 			pbuf_free(msg.data.tx.p);
 			break;
 		case FTP_DATA_MSG_START_TX:
@@ -272,49 +323,55 @@ __NO_RETURN static void ftp_data_task(void *pvParameters) {
 			}
 			data->path = msg.data.tx.path;
 			data->index = msg.index;
+			data->not_finished = false;
 			pbuf_free(msg.data.tx.p);
 			ftp_data_tx_handle(data);
 			ftp_data_unlock(msg.index);
 			break;
 		case FTP_DATA_MSG_LIST:
+			DEBUG_PRINT(msg.index, "ftp data list msg: begin\r\n");
 			if (data->type != FTP_DATA_MSG_NONE) {
+				DEBUG_PRINT(msg.index, "ftp data list msg: Other task is running: %d\r\n", data->type);
 				ftp_cmd_resp_send(msg.index, "550 Other task is running: %d\r\n", data->type);
 				pbuf_free(msg.data.list.p);
 				break;
 			}
 			if (FTP_F_OPENDIR(&(data->dir), msg.data.list.parameters) != FR_OK) {
+				DEBUG_PRINT(msg.index, "ftp data list msg: Can't open directory %s\r\n", msg.data.list.parameters);
 				ftp_cmd_resp_send(msg.index, "550 Can't open directory %s\r\n", msg.data.list.parameters);
 				pbuf_free(msg.data.list.p);
 				ftp_data_conn_stop_ex(msg.index);
 				break;
 			}
 			if (ftp_data_lock(msg.index) != FTP_RES_OK) {
+				DEBUG_PRINT(msg.index, "ftp data list msg: Can't lock task, closing %s\r\n", msg.data.list.parameters);
 				ftp_cmd_resp_send(msg.index, "550 Can't lock task, closing %s\r\n", msg.data.list.parameters);
 				FTP_F_CLOSEDIR(&(data->dir));
 				pbuf_free(msg.data.list.p);
 				ftp_data_conn_stop_ex(msg.index);
 				break;
 			}
-			if (strcmp(msg.data.list.command, "LIST")) {
+			if (!strncmp(msg.data.list.command, "LIST", 4)) {
 				data->is_list = true;
 			} else {
 				data->is_list = false;
 			}
-			if (FTP_F_STAT(msg.data.list.parameters, &(data->finfo)) != FR_OK) {
-				data->finfo.fname[0] = '/';
-				data->finfo.fname[1] = 0;
-			}
 			data->index = msg.index;
+			data->not_finished = false;
 			pbuf_free(msg.data.list.p);
 			ftp_data_list_handle(data);
 			ftp_data_unlock(msg.index);
 			break;
 		case FTP_DATA_MSG_STOP:
+			data->connected = false;
+			data->data_waits = false;
 			if (data->type == FTP_DATA_MSG_LIST) {
+				lwrb_reset(data->lwrb);
 				ftp_cmd_resp_send(msg.index, "451 LIST cmd stop\r\n");
 				FTP_F_CLOSEDIR(&(data->dir));
 				data->type = FTP_DATA_MSG_NONE;
 			} else if (data->type == FTP_DATA_MSG_START_TX) {
+				lwrb_reset(data->lwrb);
 				ftp_cmd_resp_send(msg.index, "451 RETR cmd stop\r\n");
 				FTP_F_CLOSE(&(data->file));
 				path_up_a_level(data->path);
@@ -324,6 +381,17 @@ __NO_RETURN static void ftp_data_task(void *pvParameters) {
 				FTP_F_CLOSE(&(data->file));
 				path_up_a_level(data->path);
 				data->type = FTP_DATA_MSG_NONE;
+			}
+			break;
+		case FTP_DATA_MSG_CONNECTED:
+			if (data->type == FTP_DATA_MSG_LIST || data->type == FTP_DATA_MSG_START_TX) {
+				data->connected = true;
+				DEBUG_PRINT(data->index, "DATA connected\r\n");
+				if (data->data_waits) {
+					data->data_waits = false;
+					ftp_data_send(data->index);
+					DEBUG_PRINT(data->index, "DATA connected, send data\r\n");
+				}
 			}
 			break;
 		default:

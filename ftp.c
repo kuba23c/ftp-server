@@ -6,6 +6,7 @@
  */
 
 #include "ftp.h"
+#include "ftp_config.h"
 #include "ftp_listener.h"
 #include "ftp_client.h"
 #include "ftp_cmd.h"
@@ -33,6 +34,7 @@ bool ftp_stop(void) {
  * call only once
  */
 void ftp_init(void) {
+	assert_param(TCPIP_MBOX_SIZE > (6 + 2 + FTP_NBR_CLIENTS * 6));
 	ftp_data_init();
 	ftp_data_conns_init();
 	ftp_active_init();

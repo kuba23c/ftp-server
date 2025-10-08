@@ -108,19 +108,21 @@ static uint8_t path_build(char *path, char *parameters, uint16_t parameters_len)
 
 static ftp_result_t ftp_cmd_noop(ftp_cmd_handler_data_t *const data) {
 	if (!ftp_is_logged_in(data->index)) {
-		return (FTP_RES_OK);
+		return (FTP_RES_ERROR);
 	}
 	return (ftp_cmd_resp_send(data->index, "200 zzz...\r\n"));
 }
 
 static ftp_result_t ftp_cmd_quit(ftp_cmd_handler_data_t *const data) {
-	return (ftp_cmd_resp_send(data->index, "221 Goodbye\r\n"));
+	ftp_cmd_resp_send(data->index, "221 Goodbye\r\n");
+	ftp_client_stop_ex(data->index);
+	return (FTP_RES_ERROR);
 }
 
 // print working directory
 static ftp_result_t ftp_cmd_pwd(ftp_cmd_handler_data_t *const data) {
 	if (!ftp_is_logged_in(data->index)) {
-		return (FTP_RES_OK);
+		return (FTP_RES_ERROR);
 	} else {
 		return (ftp_cmd_resp_send(data->index, "257 \"%s\" is your current directory\r\n", ftp_get_path(data->index)));
 	}
@@ -129,7 +131,7 @@ static ftp_result_t ftp_cmd_pwd(ftp_cmd_handler_data_t *const data) {
 // change working directory
 static ftp_result_t ftp_cmd_cwd(ftp_cmd_handler_data_t *const data) {
 	if (!ftp_is_logged_in(data->index)) {
-		return (FTP_RES_OK);
+		return (FTP_RES_ERROR);
 	}
 	if (data->parameters_len == 0) {
 		return (ftp_cmd_resp_send(data->index, "501 No directory name\r\n"));
@@ -148,7 +150,7 @@ static ftp_result_t ftp_cmd_cwd(ftp_cmd_handler_data_t *const data) {
 // Change the remote machine working directory to the parent of the current remote machine working directory.
 static ftp_result_t ftp_cmd_cdup(ftp_cmd_handler_data_t *const data) {
 	if (!ftp_is_logged_in(data->index)) {
-		return (FTP_RES_OK);
+		return (FTP_RES_ERROR);
 	}
 	set_path_to_root(ftp_get_path(data->index));
 	return (ftp_cmd_resp_send(data->index, "250 Directory successfully changed to root.\r\n"));
@@ -157,9 +159,9 @@ static ftp_result_t ftp_cmd_cdup(ftp_cmd_handler_data_t *const data) {
 // change mode
 static ftp_result_t ftp_cmd_mode(ftp_cmd_handler_data_t *const data) {
 	if (!ftp_is_logged_in(data->index)) {
-		return (FTP_RES_OK);
+		return (FTP_RES_ERROR);
 	}
-	if (!strcmp(data->parameters, "S")) {
+	if (data->parameters_len == 1 && !strncmp(data->parameters, "S", data->parameters_len)) {
 		return (ftp_cmd_resp_send(data->index, "200 S OK\r\n"));
 	} else {
 		return (ftp_cmd_resp_send(data->index, "504 Only S(tream) is supported\r\n"));
@@ -168,9 +170,9 @@ static ftp_result_t ftp_cmd_mode(ftp_cmd_handler_data_t *const data) {
 
 static ftp_result_t ftp_cmd_stru(ftp_cmd_handler_data_t *const data) {
 	if (!ftp_is_logged_in(data->index)) {
-		return (FTP_RES_OK);
+		return (FTP_RES_ERROR);
 	}
-	if (!strcmp(data->parameters, "F")) {
+	if (data->parameters_len == 1 && !strncmp(data->parameters, "F", data->parameters_len)) {
 		return (ftp_cmd_resp_send(data->index, "200 F OK\r\n"));
 	} else {
 		return (ftp_cmd_resp_send(data->index, "504 Only F(ile) is supported\r\n"));
@@ -179,11 +181,11 @@ static ftp_result_t ftp_cmd_stru(ftp_cmd_handler_data_t *const data) {
 
 static ftp_result_t ftp_cmd_type(ftp_cmd_handler_data_t *const data) {
 	if (!ftp_is_logged_in(data->index)) {
-		return (FTP_RES_OK);
+		return (FTP_RES_ERROR);
 	}
-	if (!strcmp(data->parameters, "A")) {
+	if (data->parameters_len == 1 && !strncmp(data->parameters, "A", data->parameters_len)) {
 		return (ftp_cmd_resp_send(data->index, "200 TYPE is now ASCII\r\n"));
-	} else if (!strcmp(data->parameters, "I")) {
+	} else if (data->parameters_len == 1 && !strncmp(data->parameters, "I", data->parameters_len)) {
 		return (ftp_cmd_resp_send(data->index, "200 TYPE is now 8-bit binary\r\n"));
 	} else {
 		return (ftp_cmd_resp_send(data->index, "504 Unknown TYPE\r\n"));
@@ -193,7 +195,7 @@ static ftp_result_t ftp_cmd_type(ftp_cmd_handler_data_t *const data) {
 // set passive data connection
 static ftp_result_t ftp_cmd_pasv(ftp_cmd_handler_data_t *const data) {
 	if (!ftp_is_logged_in(data->index)) {
-		return (FTP_RES_OK);
+		return (FTP_RES_ERROR);
 	}
 #if FTP_USE_PASSIVE_MODE == 1
 	if (ftp_pasv_start(data->index)) {
@@ -276,12 +278,9 @@ static ftp_result_t data_con_open(ftp_cmd_handler_data_t *const data) {
 
 static ftp_result_t ftp_cmd_list(ftp_cmd_handler_data_t *const data) {
 	if (!ftp_is_logged_in(data->index)) {
-		return (FTP_RES_OK);
+		return (FTP_RES_ERROR);
 	}
 
-	if (data->parameters_len == 0) {
-		return (ftp_cmd_resp_send(data->index, "501 No file name\r\n"));
-	}
 	if (data_con_open(data) != FTP_RES_OK) {
 		ftp_cmd_resp_send(data->index, "425 Can't create connection\r\n");
 		return (FTP_RES_ERROR);
@@ -291,16 +290,19 @@ static ftp_result_t ftp_cmd_list(ftp_cmd_handler_data_t *const data) {
 	data->temp.msg.index = data->index;
 	data->temp.msg.data.list.p = data->p;
 	data->temp.msg.data.list.command = data->command;
-	data->temp.msg.data.list.parameters = data->parameters;
+	if (data->parameters_len) {
+		data->temp.msg.data.list.parameters = data->parameters;
+	} else {
+		data->temp.msg.data.list.parameters = ftp_get_path(data->index);
+	}
 	ftp_data_handle(&(data->temp.msg));
-	DEBUG_PRINT(data->index, "Sending list %s\r\n", data->parameters);
-	ftp_cmd_resp_send(data->index, "150 Accepted data connection\r\n");
+	DEBUG_PRINT(data->index, "Sending list %.*s\r\n", data->parameters_len, data->parameters);
 	return (FTP_RES_OK);
 }
 
 static ftp_result_t ftp_cmd_retr(ftp_cmd_handler_data_t *const data) {
 	if (!ftp_is_logged_in(data->index)) {
-		return (FTP_RES_OK);
+		return (FTP_RES_ERROR);
 	}
 
 	if (data->parameters_len == 0) {
@@ -323,14 +325,13 @@ static ftp_result_t ftp_cmd_retr(ftp_cmd_handler_data_t *const data) {
 	data->temp.msg.data.tx.parameters = data->parameters;
 	data->temp.msg.data.tx.path = data->temp.path;
 	ftp_data_handle(&(data->temp.msg));
-	DEBUG_PRINT(data->index, "Sending file %s\r\n", data->parameters);
-	ftp_cmd_resp_send(data->index, "150 Accepted data connection\r\n");
+	DEBUG_PRINT(data->index, "Sending file %.*s\r\n", data->parameters_len, data->parameters);
 	return (FTP_RES_OK);
 }
 
 static ftp_result_t ftp_cmd_stor(ftp_cmd_handler_data_t *const data) {
 	if (!ftp_is_logged_in(data->index)) {
-		return (FTP_RES_OK);
+		return (FTP_RES_ERROR);
 	}
 
 	if (data->parameters_len == 0) {
@@ -352,14 +353,13 @@ static ftp_result_t ftp_cmd_stor(ftp_cmd_handler_data_t *const data) {
 	data->temp.msg.data.rx.parameters = data->parameters;
 	data->temp.msg.data.rx.path = data->temp.path;
 	ftp_data_handle(&(data->temp.msg));
-	DEBUG_PRINT(data->index, "Receiving file %s\r\n", data->parameters);
-	ftp_cmd_resp_send(data->index, "150 Accepted data connection\r\n");
+	DEBUG_PRINT(data->index, "Receiving file %.*s\r\n", data->parameters_len, data->parameters);
 	return (FTP_RES_OK);
 }
 
 static ftp_result_t ftp_cmd_dele(ftp_cmd_handler_data_t *const data) {
 	if (!ftp_is_logged_in(data->index)) {
-		return (FTP_RES_OK);
+		return (FTP_RES_ERROR);
 	}
 
 	if (data->parameters_len == 0) {
@@ -371,21 +371,21 @@ static ftp_result_t ftp_cmd_dele(ftp_cmd_handler_data_t *const data) {
 	}
 	if (FTP_F_STAT(data->temp.path, &(data->temp.finfo)) != FR_OK) {
 		path_up_a_level(data->temp.path);
-		return (ftp_cmd_resp_send(data->index, "550 file %s not found\r\n", data->parameters));
+		return (ftp_cmd_resp_send(data->index, "550 file %.*s not found\r\n", data->parameters_len, data->parameters));
 	}
 
 	if (FTP_F_UNLINK(data->temp.path) != FR_OK) {
 		path_up_a_level(data->temp.path);
-		return (ftp_cmd_resp_send(data->index, "450 Can't delete %s\r\n", data->parameters));
+		return (ftp_cmd_resp_send(data->index, "450 Can't delete %.*s\r\n", data->parameters_len, data->parameters));
 	}
 
 	path_up_a_level(data->temp.path);
-	return (ftp_cmd_resp_send(data->index, "250 Deleted %s\r\n", data->parameters));
+	return (ftp_cmd_resp_send(data->index, "250 Deleted %.*s\r\n", data->parameters_len, data->parameters));
 }
 
 static ftp_result_t ftp_cmd_mkd(ftp_cmd_handler_data_t *const data) {
 	if (!ftp_is_logged_in(data->index)) {
-		return (FTP_RES_OK);
+		return (FTP_RES_ERROR);
 	}
 
 	if (data->parameters_len == 0) {
@@ -397,21 +397,21 @@ static ftp_result_t ftp_cmd_mkd(ftp_cmd_handler_data_t *const data) {
 	}
 	if (FTP_F_STAT(data->temp.path, &(data->temp.finfo)) == FR_OK) {
 		path_up_a_level(data->temp.path);
-		return (ftp_cmd_resp_send(data->index, "521 \"%s\" directory already exists\r\n", data->parameters));
+		return (ftp_cmd_resp_send(data->index, "521 \"%.*s\" directory already exists\r\n", data->parameters_len, data->parameters));
 	}
 
 	if (FTP_F_MKDIR(data->temp.path) != FR_OK) {
 		path_up_a_level(data->temp.path);
-		return (ftp_cmd_resp_send(data->index, "550 Can't create \"%s\"\r\n", data->parameters));
+		return (ftp_cmd_resp_send(data->index, "550 Can't create \"%.*s\"\r\n", data->parameters_len, data->parameters));
 	}
 
-	DEBUG_PRINT(data->index, "Creating directory %s\r\n", data->parameters);
-	return (ftp_cmd_resp_send(data->index, "257 \"%s\" created\r\n", data->parameters));
+	DEBUG_PRINT(data->index, "Creating directory %.*s\r\n", data->parameters_len, data->parameters);
+	return (ftp_cmd_resp_send(data->index, "257 \"%.*s\" created\r\n", data->parameters_len, data->parameters));
 }
 
 static ftp_result_t ftp_cmd_rmd(ftp_cmd_handler_data_t *const data) {
 	if (!ftp_is_logged_in(data->index)) {
-		return (FTP_RES_OK);
+		return (FTP_RES_ERROR);
 	}
 	if (data->parameters_len == 0) {
 		return (ftp_cmd_resp_send(data->index, "501 No directory name\r\n"));
@@ -424,20 +424,20 @@ static ftp_result_t ftp_cmd_rmd(ftp_cmd_handler_data_t *const data) {
 
 	if (FTP_F_STAT(data->temp.path, &(data->temp.finfo)) != FR_OK) {
 		path_up_a_level(data->temp.path);
-		return (ftp_cmd_resp_send(data->index, "550 Directory \"%s\" not found\r\n", data->parameters));
+		return (ftp_cmd_resp_send(data->index, "550 Directory \"%.*s\" not found\r\n", data->parameters_len, data->parameters));
 	}
 
 	if (FTP_F_UNLINK(data->temp.path) != FR_OK) {
 		path_up_a_level(data->temp.path);
-		return (ftp_cmd_resp_send(data->index, "501 Can't delete \"%s\"\r\n", data->parameters));
+		return (ftp_cmd_resp_send(data->index, "501 Can't delete \"%.*s\"\r\n", data->parameters_len, data->parameters));
 	}
 	path_up_a_level(data->temp.path);
-	return (ftp_cmd_resp_send(data->index, "250 \"%s\" removed\r\n", data->parameters));
+	return (ftp_cmd_resp_send(data->index, "250 \"%.*s\" removed\r\n", data->parameters_len, data->parameters));
 }
 
 static ftp_result_t ftp_cmd_rnfr(ftp_cmd_handler_data_t *const data) {
 	if (!ftp_is_logged_in(data->index)) {
-		return (FTP_RES_OK);
+		return (FTP_RES_ERROR);
 	}
 
 	if (data->parameters_len == 0) {
@@ -449,7 +449,7 @@ static ftp_result_t ftp_cmd_rnfr(ftp_cmd_handler_data_t *const data) {
 		return (ftp_cmd_resp_send(data->index, "500 Command line too long\r\n"));
 	}
 	if (FTP_F_STAT(data->path_rename, &(data->temp.finfo)) != FR_OK) {
-		return (ftp_cmd_resp_send(data->index, "550 file \"%s\" not found\r\n", data->parameters));
+		return (ftp_cmd_resp_send(data->index, "550 file \"%.*s\" not found\r\n", data->parameters_len, data->parameters));
 	}
 	DEBUG_PRINT(data->index, "Renaming %s\r\n", data->path_rename);
 	return (ftp_cmd_resp_send(data->index, "350 RNFR accepted - file exists, ready for destination\r\n"));
@@ -457,7 +457,7 @@ static ftp_result_t ftp_cmd_rnfr(ftp_cmd_handler_data_t *const data) {
 
 static ftp_result_t ftp_cmd_rnto(ftp_cmd_handler_data_t *const data) {
 	if (!ftp_is_logged_in(data->index)) {
-		return (FTP_RES_OK);
+		return (FTP_RES_ERROR);
 	}
 
 	if (!data->parameters_len) {
@@ -473,7 +473,7 @@ static ftp_result_t ftp_cmd_rnto(ftp_cmd_handler_data_t *const data) {
 
 	if (FTP_F_STAT(data->temp.path, &(data->temp.finfo)) == FR_OK) {
 		path_up_a_level(data->temp.path);
-		return (ftp_cmd_resp_send(data->index, "553 \"%s\" already exists\r\n", data->parameters));
+		return (ftp_cmd_resp_send(data->index, "553 \"%.*s\" already exists\r\n", data->parameters_len, data->parameters));
 	}
 
 	DEBUG_PRINT(data->index, "Renaming %s to %s\r\n", data->path_rename, data->temp.path);
@@ -488,14 +488,14 @@ static ftp_result_t ftp_cmd_rnto(ftp_cmd_handler_data_t *const data) {
 
 static ftp_result_t ftp_cmd_feat(ftp_cmd_handler_data_t *const data) {
 	if (!ftp_is_logged_in(data->index)) {
-		return (FTP_RES_OK);
+		return (FTP_RES_ERROR);
 	}
 	return (ftp_cmd_resp_send(data->index, "211 Extensions supported:\r\n MDTM\r\n MLSD\r\n SIZE\r\n SITE FREE\r\n211 End.\r\n"));
 }
 
 static ftp_result_t ftp_cmd_syst(ftp_cmd_handler_data_t *const data) {
 	if (!ftp_is_logged_in(data->index)) {
-		return (FTP_RES_OK);
+		return (FTP_RES_ERROR);
 	}
 	return (ftp_cmd_resp_send(data->index, "215 FTP Server, V1.0\r\n"));
 }
@@ -529,7 +529,7 @@ static uint8_t date_time_get(char *parameters, uint16_t *pdate, uint16_t *ptime)
 	if (strlen(parameters) < 15 || parameters[14] != ' ')
 		return (0);
 	for (uint8_t i = 0; i < 14; i++)
-		if (!isdigit((uint8_t ) parameters[i]))
+		if (!isdigit((uint8_t) parameters[i]))
 			return (0);
 
 	parameters[14] = 0;
@@ -550,7 +550,7 @@ static uint8_t date_time_get(char *parameters, uint16_t *pdate, uint16_t *ptime)
 
 static ftp_result_t ftp_cmd_mdtm(ftp_cmd_handler_data_t *const data) {
 	if (!ftp_is_logged_in(data->index)) {
-		return (FTP_RES_OK);
+		return (FTP_RES_ERROR);
 	}
 
 	uint16_t date;
@@ -567,7 +567,7 @@ static ftp_result_t ftp_cmd_mdtm(ftp_cmd_handler_data_t *const data) {
 	}
 	if (FTP_F_STAT(data->temp.path, &(data->temp.finfo)) != FR_OK) {
 		path_up_a_level(data->temp.path);
-		return (ftp_cmd_resp_send(data->index, "550 file \"%s\" not found\r\n", data->parameters));
+		return (ftp_cmd_resp_send(data->index, "550 file \"%.*s\" not found\r\n", data->parameters_len, data->parameters));
 	}
 
 	path_up_a_level(data->temp.path);
@@ -586,7 +586,7 @@ static ftp_result_t ftp_cmd_mdtm(ftp_cmd_handler_data_t *const data) {
 
 static ftp_result_t ftp_cmd_size(ftp_cmd_handler_data_t *const data) {
 	if (!ftp_is_logged_in(data->index)) {
-		return (FTP_RES_OK);
+		return (FTP_RES_ERROR);
 	}
 
 	if (data->parameters_len == 0) {
@@ -608,22 +608,22 @@ static ftp_result_t ftp_cmd_size(ftp_cmd_handler_data_t *const data) {
 
 static ftp_result_t ftp_cmd_site(ftp_cmd_handler_data_t *const data) {
 	if (!ftp_is_logged_in(data->index)) {
-		return (FTP_RES_OK);
+		return (FTP_RES_ERROR);
 	}
 
-	if (!strcmp(data->parameters, "FREE")) {
+	if (data->parameters_len == 4 && !strncmp(data->parameters, "FREE", data->parameters_len)) {
 		FATFS *fs;
 		uint32_t free_clust;
 		FTP_F_GETFREE("0:", &free_clust, &fs);
 		return (ftp_cmd_resp_send(data->index, "211 %lu MB free of %lu MB capacity\r\n", free_clust * fs->csize >> 11, (fs->n_fatent - 2) * fs->csize >> 11));
 	} else {
-		return (ftp_cmd_resp_send(data->index, "550 Unknown SITE command %s\r\n", data->parameters));
+		return (ftp_cmd_resp_send(data->index, "550 Unknown SITE command %.*s\r\n", data->parameters_len, data->parameters));
 	}
 }
 
 static ftp_result_t ftp_cmd_stat(ftp_cmd_handler_data_t *const data) {
 	if (!ftp_is_logged_in(data->index)) {
-		return (FTP_RES_OK);
+		return (FTP_RES_ERROR);
 	}
 	return (ftp_cmd_resp_send(data->index, "221 FTP Server status: you will be disconnected after %d minutes of inactivity\r\n",
 			(FTP_SERVER_INACTIVE_CNT * FTP_SERVER_READ_TIMEOUT_MS) / 60000));
@@ -634,7 +634,7 @@ static ftp_result_t ftp_cmd_auth(ftp_cmd_handler_data_t *const data) {
 }
 
 static ftp_result_t ftp_cmd_user(ftp_cmd_handler_data_t *const data) {
-	if (ftp_is_user_name_ok(data->parameters)) {
+	if (ftp_is_user_name_ok(data->parameters, data->parameters_len)) {
 		ftp_set_user(data->index, FTP_USER_USER_NO_PASS);
 		return (ftp_cmd_resp_send(data->index, "331 OK. Password required\r\n"));
 	} else {
@@ -645,7 +645,7 @@ static ftp_result_t ftp_cmd_user(ftp_cmd_handler_data_t *const data) {
 static ftp_result_t ftp_cmd_pass(ftp_cmd_handler_data_t *const data) {
 	if (ftp_get_user(data->index) == FTP_USER_NONE) {
 		return (ftp_cmd_resp_send(data->index, "530 User not specified\r\n"));
-	} else if (ftp_is_pass_ok(data->parameters)) {
+	} else if (ftp_is_pass_ok(data->parameters, data->parameters_len)) {
 		ftp_set_user(data->index, FTP_USER_USER_LOGGED_IN);
 		return (ftp_cmd_resp_send(data->index, "230 OK, logged in as user\r\n"));
 	} else {
@@ -714,7 +714,7 @@ static ftp_result_t ftp_parse_command(struct pbuf *p, ftp_cmd_t *const ftp_cmd) 
 		return (FTP_RES_ERROR);
 	} else {
 		do {
-			if (isalpha((uint8_t ) pbuf[i])) {
+			if (isalpha((uint8_t) pbuf[i])) {
 				if (ftp_cmd->command == NULL) {
 					ftp_cmd->command = &(pbuf[i]);
 				}
@@ -739,8 +739,14 @@ static ftp_result_t ftp_parse_command(struct pbuf *p, ftp_cmd_t *const ftp_cmd) 
 				} else {
 					ftp_cmd->parameters = pbuf + i;
 					ftp_cmd->parameters_len = (uint16_t) ret;
+					pbuf[i + ret] = 0;
 					return (FTP_RES_OK);
 				}
+			} else if (pbuf[i] == '\r' || pbuf[i] == '\n') {
+				pbuf[i] = 0;
+				ftp_cmd->parameters = NULL;
+				ftp_cmd->parameters_len = 0;
+				return (FTP_RES_OK);
 			} else {
 				return (FTP_RES_ERROR);
 			}
@@ -762,6 +768,7 @@ __NO_RETURN static void ftp_cmd_task(void *pvParameters) {
 			ftp_cmd.p = msg.p;
 			if (ftp_process_command(msg.index, &ftp_cmd) != FTP_RES_OK) {
 				DEBUG_PRINT(msg.index, "CMD process: FAILED\r\n");
+				ftp_client_stop_ex(msg.index);
 			} else {
 				DEBUG_PRINT(msg.index, "CMD process: SUCCESS\r\n");
 			}
@@ -776,9 +783,9 @@ __NO_RETURN static void ftp_cmd_task(void *pvParameters) {
 err_t ftp_cmd_handle(const ftp_cmd_msg_t *const msg) {
 	pbuf_ref(msg->p);
 	if (xStreamBufferSend(ftp_cmd_buffer_handle, msg, FTP_CMD_BUFFER_MESSAGE_SIZE, 0) == FTP_CMD_BUFFER_MESSAGE_SIZE) {
-		DEBUG_PRINT(index, "ftp cmd buff send OK\r\n");
+		DEBUG_PRINT(msg->index, "ftp cmd buff send OK\r\n");
 	} else {
-		DEBUG_PRINT(index, "ftp cmd buff send ERROR\r\n");
+		DEBUG_PRINT(msg->index, "ftp cmd buff send ERROR\r\n");
 	}
 	return (ERR_OK);
 }

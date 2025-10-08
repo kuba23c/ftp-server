@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "lwip.h"
 
 typedef struct {
 	uint8_t listeners_active;
@@ -24,8 +25,10 @@ typedef struct {
 	uint32_t listeners_data_conn_rejected;
 } ftp_pasv_listener_stats_t;
 
+err_t ftp_pasv_listener_poll(uint8_t index);
 bool ftp_pasv_start(uint8_t index);
 bool ftp_pasv_stop(uint8_t index);
+void ftp_pasv_listener_stop(uint8_t index);
 void ftp_pasv_listeners_stop(void);
 void ftp_pasv_init(void);
 

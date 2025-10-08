@@ -27,6 +27,7 @@ typedef enum {
 	FTP_DATA_MSG_START_TX,
 	FTP_DATA_MSG_LIST,
 	FTP_DATA_MSG_STOP,
+	FTP_DATA_MSG_CONNECTED,
 } ftp_data_msg_type_t;
 
 typedef struct {
