@@ -21,9 +21,9 @@ typedef struct {
 	uint32_t listeners_errors;
 } ftp_listener_stats_t;
 
-bool ftp_start(void);
-bool ftp_stop(void);
-void ftp_init(void);
+bool ftp_listener_start(void);
+bool ftp_listener_stop(void);
+void ftp_listener_init(void);
 
 const ftp_listener_stats_t* ftp_listener_stats_get(void);
 void ftp_listener_stats_clear(void);

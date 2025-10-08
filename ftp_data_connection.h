@@ -31,7 +31,7 @@ err_t ftp_data_conn_start(uint8_t index, struct tcp_pcb *newpcb);
 void ftp_data_conn_stop(uint8_t index);
 err_t ftp_data_conn_stop_ex(uint8_t index);
 void ftp_data_conns_stop(void);
-void ftp_data_conn_init(void);
+void ftp_data_conns_init(void);
 
 const ftp_data_conns_stats_t* ftp_data_conn_stats_get(void);
 void ftp_data_conn_stats_clear(void);

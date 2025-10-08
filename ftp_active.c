@@ -9,6 +9,7 @@
 #include "ftp_config.h"
 #include "ftp_data_connection.h"
 #include "ftp_cmd.h"
+#include "ftp_client.h"
 
 #define FTP_TCP_MAX_IDLE_SEC	10
 

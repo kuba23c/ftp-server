@@ -46,7 +46,7 @@ dcm_type ftp_get_data_conn_mode(uint8_t index);
 err_t ftp_client_start(struct tcp_pcb *newpcb);
 void ftp_client_stop(uint8_t index);
 void ftp_clients_stop(void);
-void ftp_client_init(void);
+void ftp_clients_init(void);
 
 const ftp_clients_stats_t* ftp_clients_stats_get(void);
 void ftp_clients_stats_clear(void);

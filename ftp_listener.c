@@ -78,7 +78,7 @@ static err_t ftp_listener_accept(void *arg, struct tcp_pcb *newpcb, err_t err) {
 	return (ftp_client_start(newpcb));
 }
 
-static void ftp_listener_start(void *ctx) {
+static void ftp_listener_start_cb(void *ctx) {
 	UNUSED(ctx);
 	if (ftp_listener.listener_pcb == NULL) {
 		ftp_listener.listener_pcb = tcp_new();
@@ -106,7 +106,7 @@ static void ftp_listener_start(void *ctx) {
 	}
 }
 
-static void ftp_listener_stop(void *ctx) {
+static void ftp_listener_stop_cb(void *ctx) {
 	UNUSED(ctx);
 	if (ftp_listener.listener_pcb) {
 		ftp_listener_close();
@@ -120,15 +120,13 @@ static void ftp_listener_stop(void *ctx) {
  * @brief Init ftp server
  * call only once
  */
-void ftp_init(void) {
-	ftp_pasv_init();
-	ftp_client_init();
+void ftp_listener_init(void) {
 	if (!ftp_listener.inited) {
 		ftp_listener.inited = true;
 		ftp_listener.stats.listeners_max = 1;
-		ftp_listener.create_listener = tcpip_callbackmsg_new(ftp_listener_start, NULL);
+		ftp_listener.create_listener = tcpip_callbackmsg_new(ftp_listener_start_cb, NULL);
 		assert_param(ftp_listener.create_listener != NULL);
-		ftp_listener.delete_listener = tcpip_callbackmsg_new(ftp_listener_stop, NULL);
+		ftp_listener.delete_listener = tcpip_callbackmsg_new(ftp_listener_stop_cb, NULL);
 		assert_param(ftp_listener.delete_listener != NULL);
 	}
 }
@@ -136,14 +134,14 @@ void ftp_init(void) {
 /**
  * @brief Start ftp server
  */
-bool ftp_start(void) {
+bool ftp_listener_start(void) {
 	return (tcpip_callbackmsg_trycallback(ftp_listener.create_listener) == ERR_OK);
 }
 
 /**
  * @brief Stop ftp server
  */
-bool ftp_stop(void) {
+bool ftp_listener_stop(void) {
 	return (tcpip_callbackmsg_trycallback(ftp_listener.delete_listener) == ERR_OK);
 }
 
