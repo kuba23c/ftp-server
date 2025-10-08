@@ -328,6 +328,35 @@ static ftp_result_t ftp_cmd_retr(ftp_cmd_handler_data_t *const data) {
 	return (FTP_RES_OK);
 }
 
+static ftp_result_t ftp_cmd_stor(ftp_cmd_handler_data_t *const data) {
+	if (!ftp_is_logged_in(data->index)) {
+		return (FTP_RES_OK);
+	}
+
+	if (data->parameters_len == 0) {
+		return (ftp_cmd_resp_send(data->index, "501 No file name\r\n"));
+	}
+	data->temp.path = ftp_get_path(data->index);
+	if (!path_build(data->temp.path, data->parameters, data->parameters_len)) {
+		return (ftp_cmd_resp_send(data->index, "500 Command line too long\r\n"));
+	}
+	if (data_con_open(data) != FTP_RES_OK) {
+		path_up_a_level(data->temp.path);
+		ftp_cmd_resp_send(data->index, "425 Can't create connection\r\n");
+		return (FTP_RES_ERROR);
+	}
+	pbuf_ref(data->p);
+	data->temp.msg.msg_type = FTP_DATA_MSG_START_RX;
+	data->temp.msg.index = data->index;
+	data->temp.msg.data.rx.p = data->p;
+	data->temp.msg.data.rx.parameters = data->parameters;
+	data->temp.msg.data.rx.path = data->temp.path;
+	ftp_data_handle(&(data->temp.msg));
+	DEBUG_PRINT(data->index, "Receiving file %s\r\n", data->parameters);
+	ftp_cmd_resp_send(data->index, "150 Accepted data connection\r\n");
+	return (FTP_RES_OK);
+}
+
 static ftp_result_t ftp_cmd_dele(ftp_cmd_handler_data_t *const data) {
 	if (!ftp_is_logged_in(data->index)) {
 		return (FTP_RES_OK);
@@ -640,7 +669,7 @@ static ftp_cmd_handlers_t ftpd_commands[] = { //
 //		{ "MLSD", ftp_cmd_mlsd }, //
 		{ "DELE", ftp_cmd_dele }, //
 		{ "RETR", ftp_cmd_retr }, //
-//		{ "STOR", ftp_cmd_stor }, //
+		{ "STOR", ftp_cmd_stor }, //
 		{ "MKD", ftp_cmd_mkd }, //
 		{ "RMD", ftp_cmd_rmd }, //
 		{ "RNFR", ftp_cmd_rnfr }, //

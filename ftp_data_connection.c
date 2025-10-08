@@ -208,12 +208,16 @@ static err_t ftp_data_conn_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p,
 		tcp_abort(tpcb);
 		return (ERR_ABRT);
 	}
+	ftp_data_msg_t msg = { 0 };
 	if (p == NULL) {
+		msg.msg_type = FTP_DATA_MSG_RECV;
+		msg.index = data_conn->index;
+		msg.data.recv_p = NULL;
+		ftp_data_handle(&msg);
 		return (ftp_data_conn_close(data_conn));
 	}
 
 	data_conn->idle_cnt = 0;
-	ftp_data_msg_t msg = { 0 };
 	msg.msg_type = FTP_DATA_MSG_RECV;
 	msg.index = data_conn->index;
 	msg.data.recv_p = p;

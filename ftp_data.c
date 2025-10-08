@@ -150,10 +150,28 @@ __NO_RETURN static void ftp_data_task(void *pvParameters) {
 
 		switch (msg.msg_type) {
 		case FTP_DATA_MSG_RECV:
-			// TODO HANDLE DATA HERE
-			if (msg.data.recv_p) {
-				pbuf_free(msg.data.recv_p);
+			if (data->type == FTP_DATA_MSG_START_RX) {
+				if (msg.data.recv_p == NULL) {
+					data->type = FTP_DATA_MSG_NONE;
+					FTP_F_CLOSE(&(data->file));
+					DEBUG_PRINT(msg.index, "Received %lu bytes\r\n", data->all_bytes_transfered);
+					ftp_cmd_resp_send(msg.index, "226 File successfully transferred, %lu bytes\r\n", data->all_bytes_transfered);
+					path_up_a_level(msg.data.tx.path);
+					ftp_data_conn_stop_ex(msg.index);
+					break;
+				}
+				FRESULT result = FTP_F_WRITE(&data->file, msg.data.recv_p->payload, msg.data.recv_p->len, (UINT* )&(data->written_len));
+				if (result != FR_OK || msg.data.recv_p->len != data->written_len) {
+					data->type = FTP_DATA_MSG_NONE;
+					FTP_F_CLOSE(&(data->file));
+					DEBUG_PRINT(msg.index, "file write ERROR: %d, Received %lu bytes\r\n", result, data->all_bytes_transfered);
+					ftp_cmd_resp_send(msg.index, "451 Communication error during transfer\r\n");
+					path_up_a_level(msg.data.tx.path);
+					ftp_data_conn_stop_ex(msg.index);
+					break;
+				}
 			}
+			pbuf_free(msg.data.recv_p);
 			break;
 		case FTP_DATA_MSG_SENT:
 			if (data->type == FTP_DATA_MSG_LIST) {
@@ -193,12 +211,35 @@ __NO_RETURN static void ftp_data_task(void *pvParameters) {
 					ftp_data_conn_stop_ex(msg.index);
 				}
 				ftp_data_unlock(msg.index);
-			} else if (data->type == FTP_DATA_MSG_START_RX) {
-				// TODO HANDLE DATA HERE
 			}
 			break;
 		case FTP_DATA_MSG_START_RX:
-			// TODO HANDLE DATA HERE
+			if (data->type != FTP_DATA_MSG_NONE) {
+				ftp_cmd_resp_send(msg.index, "550 Other task is running: %d\r\n", data->type);
+				path_up_a_level(msg.data.rx.path);
+				pbuf_free(msg.data.rx.p);
+				break;
+			}
+
+			if (FTP_F_OPEN(&(data->file), msg.data.rx.path, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) {
+				ftp_cmd_resp_send(msg.index, "450 Can't open/create %s\r\n", msg.data.rx.parameters);
+				path_up_a_level(msg.data.rx.path);
+				pbuf_free(msg.data.rx.p);
+				ftp_data_conn_stop_ex(msg.index);
+				break;
+			}
+			if (FTP_F_STAT(msg.data.rx.path, &data->finfo) != FR_OK) {
+				FTP_F_CLOSE(&(data->file));
+				ftp_cmd_resp_send(msg.index, "550 File %s not found\r\n", msg.data.rx.parameters);
+				path_up_a_level(msg.data.rx.path);
+				pbuf_free(msg.data.rx.p);
+				ftp_data_conn_stop_ex(msg.index);
+				break;
+			}
+			data->path = msg.data.tx.path;
+			data->index = msg.index;
+			data->all_bytes_transfered = 0;
+			pbuf_free(msg.data.tx.p);
 			break;
 		case FTP_DATA_MSG_START_TX:
 			if (data->type != FTP_DATA_MSG_NONE) {
@@ -281,8 +322,7 @@ __NO_RETURN static void ftp_data_task(void *pvParameters) {
 			} else if (data->type == FTP_DATA_MSG_START_RX) {
 				ftp_cmd_resp_send(msg.index, "451 STOR cmd stop\r\n");
 				FTP_F_CLOSE(&(data->file));
-				// TODO
-//				path_up_a_level(data->path);
+				path_up_a_level(data->path);
 				data->type = FTP_DATA_MSG_NONE;
 			}
 			break;

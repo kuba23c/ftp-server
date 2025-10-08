@@ -39,6 +39,7 @@ typedef struct {
 	char path[FTP_CWD_SIZE];
 	ftp_user_t user;
 	dcm_type data_conn_mode;
+	bool locked;
 } ftp_client_t;
 
 typedef struct {
