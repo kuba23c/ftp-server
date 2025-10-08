@@ -24,6 +24,7 @@ typedef struct __PACKED {
 	struct pbuf *p;
 } ftp_cmd_msg_t;
 
+void path_up_a_level(char *path);
 err_t ftp_cmd_handle(const ftp_cmd_msg_t *const msg);
 void ftp_cmd_init(void);
 

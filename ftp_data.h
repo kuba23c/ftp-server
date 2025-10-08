@@ -35,12 +35,19 @@ typedef struct {
 	char *command;
 } ftp_data_msg_data_params_t;
 
+typedef struct {
+	struct pbuf *p;
+	char *parameters;
+	char *path;
+} ftp_data_msg_data_rx_tx_t;
+
 typedef union __PACKED {
 	struct pbuf *recv_p;
 	uint16_t sent_len;
-	char *path;
 	void *stop;
 	ftp_data_msg_data_params_t list;
+	ftp_data_msg_data_rx_tx_t tx;
+	ftp_data_msg_data_rx_tx_t rx;
 } ftp_data_msg_data_t;
 
 typedef struct __PACKED {
