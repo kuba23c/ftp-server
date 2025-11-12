@@ -63,6 +63,6 @@ void ftp_init(void);
 void ftp_start(void);
 void ftp_stop(void);
 void ftp_clear_errors(void);
-const ftp_stats_t* ftp_get_stats(void);
+const ftp_stats_t* FTP_GetStats(void);
 
 #endif /* ETH_FTP_FTP_SERVER_H_ */

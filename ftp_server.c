@@ -1471,6 +1471,7 @@ static void ftp_task(void *param) {
 void ftp_start(void) {
 	if (FTP.status == FTP_IDLE || FTP.status == FTP_ERROR) {
 		FTP.status = FTP_STARTING;
+		my_printf("FTP start\r\n");
 	}
 }
 
@@ -1480,6 +1481,7 @@ void ftp_start(void) {
 void ftp_stop(void) {
 	if (FTP.status == FTP_RUNNING) {
 		FTP.status = FTP_STOPPING;
+		my_printf("FTP stop\r\n");
 	}
 }
 
@@ -1702,6 +1704,6 @@ uint16_t ftp_get_port(void) {
 	return (FTP.port);
 }
 
-const ftp_stats_t* ftp_get_stats(void) {
+const ftp_stats_t* FTP_GetStats(void) {
 	return (&FTP.stats);
 }
